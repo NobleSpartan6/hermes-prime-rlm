@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-prime-rlm"
+version = "0.1.0"
+description = "Hermes Agent plugin: run a bounded Prime Agent RLM coding task in a detached Git worktree and return independently executed verification evidence."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "hermes-prime-rlm contributors" }]
+keywords = ["hermes", "prime-agent", "rlm", "git", "verification"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Version Control :: Git",
+]
+# Runtime dependencies: standard library only (project rule). Nothing here.
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4"]
+
+[tool.setuptools]
+py-modules = []
+
+[tool.setuptools.packages.find]
+include = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+  "slow: tests that intentionally exceed short timeouts (process-termination paths)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".git"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "UP",  # pyupgrade
+  "S",   # flake8-bandit (shell=True / os.system bans live here)
+  "SIM", # flake8-simplify
+  "C4",  # flake8-comprehensions
+]
+ignore = [
+  "S404", # subprocess import is the entire point of this plugin; misuse is banned by S602/S603 rules instead
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S108", "S603", "S607", "E501"]

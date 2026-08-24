@@ -1,0 +1,5 @@
+name: prime-rlm
+version: 0.1.0
+description: Run a bounded Prime Agent RLM coding task in a detached Git worktree and return independently executed verification evidence.
+provides_tools:
+  - prime_rlm_run

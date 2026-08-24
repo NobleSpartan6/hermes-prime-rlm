@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+.venv/
+venv/
+
+# Local run artifacts (never commit run evidence)
+runs/
+plugin-data/
+
+# OS noise
+Thumbs.db
+.DS_Store

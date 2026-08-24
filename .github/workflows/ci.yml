@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure Git test identity
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI Runner"
+          git config --global init.defaultBranch main
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest ruff
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Pytest
+        run: pytest -q
+
+      - name: Plugin Doctor
+        shell: bash
+        run: |
+          if command -v hermes >/dev/null 2>&1; then
+            hermes plugins doctor . --ci
+          else
+            echo "hermes CLI not installed on CI runner; doctor gate runs locally"
+          fi
