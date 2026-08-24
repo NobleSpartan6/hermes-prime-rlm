@@ -312,7 +312,12 @@ def _run(args: dict) -> dict:
             status=Status.FAILED,
             run_id=run_id,
             base_commit=base_commit,
-            candidate_path=layout.candidate,
+            candidate_path=candidate_display_path(layout),
+            receipt_path=None,
+            receipt_sha256=None,
+            changed_paths=ChangedPaths(),
+            check_rows=[],
+            prime_final_text="",
             error_code="RUN_FAILED",
             message="the run failed after admission; preserved evidence is available.",
         )

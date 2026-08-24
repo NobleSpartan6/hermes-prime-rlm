@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -130,6 +131,46 @@ def _short_path(path: str) -> str | None:
     if length and buf.value:
         return buf.value
     return None
+
+
+def resolve_shim_target(shim: str) -> tuple[str, str] | None:
+    """Resolve an npm ``.cmd`` shim to ``(node_exe, cli_js)`` for direct spawn.
+
+    npm's cmd-shim template is deterministic: it runs ``node.exe <shim-dir>\\
+    node_modules\\<pkg>\\<bin-rel-path> %*``. Parsing the shim's final command
+    line gives us the real entry script, letting us bypass cmd.exe entirely —
+    which restores true literal argv (spaces and all) for the direct route.
+    Returns None when the shim doesn't match the npm template.
+    """
+    if not IS_WINDOWS:
+        return None
+    try:
+        text = Path(shim).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    # Match npm's cmd-shim tail: `& "%_prog%"  "<...js>" %*` (the script path
+    # is a %dp0%-relative literal). No $ anchor — the shim ends with a newline.
+    match = re.search(r'"%_prog%"\s+"?([^"\r\n]+?\.js)"?\s+%*', text)
+    if match is None:
+        return None
+    script = Path(match.group(1).strip())
+    if "%dp0%" in str(script) or not script.is_absolute():
+        # Expand the shim's %dp0% (its own directory) into the script path.
+        raw = match.group(1).strip()
+        dp0 = str(Path(shim).parent)
+        raw = raw.replace("%dp0%\\", dp0 + "\\").replace("%dp0%", dp0)
+        script = Path(raw)
+    if not script.is_file():
+        return None
+    node = shutil.which("node")
+    if node is None:
+        shim_dir = Path(shim).parent
+        local_node = shim_dir / "node.exe"
+        if local_node.is_file():
+            node = str(local_node)
+        else:
+            return None
+    return node, str(script)
 
 
 def build_shim_argv(shim: str, args: list[str]) -> list[str]:

@@ -224,8 +224,15 @@ def probe_prime_version(command_prefix: list[str]) -> tuple[int, int, int]:
             "prime-agent --version exited nonzero: "
             f"{(completed.stderr or '').strip()[:300]}",
         )
-    version = check_prime_version_compatible(completed.stdout or "")
-    _LAST_PROBED_VERSION_OUTPUT.set(completed.stdout or "")
+    # npm .cmd shims on Windows may print the version to stderr (node's
+    # console.log goes through the shim's stdout only when the child inherits
+    # it directly; some shims redirect). Parse the COMBINED output so either
+    # channel works, while still failing closed on zero/multiple matches.
+    combined = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    version = check_prime_version_compatible(combined)
+    _LAST_PROBED_VERSION_OUTPUT.set(
+        (completed.stdout or "").strip() or (completed.stderr or "").strip()
+    )
     return version
 
 

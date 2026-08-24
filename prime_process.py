@@ -18,6 +18,7 @@ from .platform_runtime import (
     guard_shim_argument,
     is_cmd_shim,
     resolve_command_prefix,
+    resolve_shim_target,
     spawn_and_wait,
 )
 from .workspace import PRIME_FIXED_INSTRUCTION
@@ -43,10 +44,12 @@ def build_prime_argv(
 ) -> list[str]:
     """Assemble the fixed JSON-mode invocation.
 
-    Shape (spec §16, confirmed against the documented contract)::
+    Shape (spec §16, confirmed against the installed Prime 0.8.0 CLI)::
 
-        <prefix> --mode json --no-session --cwd <candidate> <task-file> -- <fixed-instruction>
+        <prefix> --mode json --no-session --cwd <candidate> @<task-file> -- <fixed-instruction>
 
+    The task file travels as an ``@file`` argument (Prime's documented file
+    reference form), so the user goal never appears on the command line.
     ``--`` terminates option parsing so the trailing instruction can never be
     interpreted as flags, and so a goal-shaped instruction cannot inject
     options even if a future Prime reads the tail as text.
@@ -58,14 +61,26 @@ def build_prime_argv(
         "--no-session",
         "--cwd",
         candidate_path,
-        task_file_path,
+        f"@{task_file_path}",
         "--",
         PRIME_FIXED_INSTRUCTION,
     ]
     if is_cmd_shim(head):
-        # Shim route: build_shim_argv guards every token against cmd-active
-        # characters and double-quotes each one; the goal never appears in
-        # argv, only the fixed ASCII instruction and resolved paths.
+        # npm .cmd shims re-split space-bearing args at the cmd.exe layer
+        # (verified empirically), which would corrupt the task-file path and
+        # the fixed instruction. When the shim matches npm's template, resolve
+        # its real target (node.exe + cli.js) and spawn that directly — full
+        # literal argv, no cmd.exe involved. Non-npm shims fall back to the
+        # guarded short-path route.
+        target = resolve_shim_target(head)
+        if target is not None:
+            node_exe, cli_js = target
+            return [
+                node_exe,
+                cli_js,
+                *command_prefix_resolved[1:],
+                *tail,
+            ]
         return build_shim_argv(head, tail)
     return [head, *command_prefix_resolved[1:], *tail]
 

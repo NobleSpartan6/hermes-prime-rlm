@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -52,7 +51,13 @@ demo.mkdir(parents=True)
 
 
 def git(*args: str) -> None:
-    subprocess.run(["git", *args], cwd=demo, check=True, capture_output=True)
+    subprocess.run(  # noqa: S603, S607 - fixed git argv, demo helper
+        ["git", *args],
+        cwd=demo,
+        check=True,
+        capture_output=True,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
 
 
 git("init", "-b", "main")
@@ -64,26 +69,27 @@ git("add", "-A")
 git("commit", "-m", "initial commit")
 print(f"[demo] repository: {demo}")
 
-# --- Invoke the tool ----------------------------------------------------------
-os.environ["FAKE_PRIME_SCENARIO"] = "success_tracked_and_untracked"
+# --- Invoke the tool against REAL Prime Agent --------------------------------
+# OPENROUTER_API_KEY comes from Hermes' .env — load it manually (no dep).
+_env_path = Path(r"C:\Users\ebene\AppData\Local\hermes\.env")
+for _line in _env_path.read_text(encoding="utf-8").splitlines():
+    if _line.strip() and not _line.startswith("#") and "=" in _line:
+        _k, _, _v = _line.partition("=")
+        os.environ.setdefault(_k.strip(), _v.strip())
+
 result = json.loads(
     tool["handler"](
         {
-            "goal": "Add a farewell() function to app.py and document both functions in README.",
+            "goal": "Add a farewell() function to app.py that returns a goodbye string, and document both greet() and farewell() in README.md. Keep the change minimal.",
             "repository_path": str(demo),
             "checks": [
                 {
                     "name": "import-check",
-                    "argv": [sys.executable, "-c", "import app; assert callable(app.greet)"],
-                    "timeout_seconds": 60,
-                },
-                {
-                    "name": "tests",
-                    "argv": [sys.executable, "-c", "print('demo test pass'); raise SystemExit(0)"],
+                    "argv": [sys.executable, "-c", "import app; assert callable(app.greet) and callable(app.farewell)"],
                     "timeout_seconds": 60,
                 },
             ],
-            "runtime_timeout_seconds": 300,
+            "runtime_timeout_seconds": 600,
         }
     )
 )
@@ -106,10 +112,11 @@ print(f"  checks passed:       {[c['name'] for c in r['checks'] if c['status'] =
 print(f"  tree digest:         {r['candidate_tree_sha256'][:16]}...")
 print(f"  automatic retry:     {r['automatic_retry_allowed']}")
 src_clean = (
-    subprocess.run(
+    subprocess.run(  # noqa: S603, S607 - fixed git argv, demo helper
         ["git", "-C", str(demo), "status", "--porcelain"],
         capture_output=True,
         text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     ).stdout.strip()
     == ""
 )
