@@ -144,14 +144,18 @@ def test_wrong_candidate_path_rejected(tmp_path):
 
 def test_windows_path_case_equivalent_accepted(tmp_path):
     if _sys.platform != "win32":
-        # The equivalence function still normalizes casefold on win-style paths.
-        pass
+        import pytest
+
+        # macOS/Linux filesystems are case-sensitive, so a case-swapped path
+        # does not resolve to the same directory there — this equivalence is
+        # Windows-specific semantics. Verified natively on windows-latest.
+        pytest.skip("Windows path casefolding semantics")
     lower = str(tmp_path / "cand")
     upper = lower.replace("cand", "CAND")
     records = _valid_records(lower)
     path = _write_stream(tmp_path, records, candidate=lower)
-    result = prime_protocol.parse_event_stream(path, upper if _sys.platform == "win32" else lower)
-    assert result.valid is (_sys.platform == "win32")
+    result = prime_protocol.parse_event_stream(path, upper)
+    assert result.valid is True
 
 
 def test_windows_slash_equivalent_accepted(tmp_path):
