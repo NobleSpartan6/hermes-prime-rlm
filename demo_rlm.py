@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
-FIXTURE = Path(r"C:\Users\ebene\hermes rlm\rlm-fixture\payments-api")
+FIXTURE = Path(__file__).resolve().parent / "examples" / "payments-api"
 sys.path.insert(0, str(REPO / "tests"))
 
 import importlib.util
@@ -36,7 +36,9 @@ tool = registered[0]
 print(f"[rlm-demo] tool: {tool['name']}")
 
 # env for Prime (kernel python override + provider key)
-_env_path = Path(r"C:\Users\ebene\AppData\Local\hermes\.env")
+_env_path = Path(
+    os.environ.get("HERMES_HOME", Path.home() / "AppData" / "Local" / "hermes")
+) / ".env"
 for _line in _env_path.read_text(encoding="utf-8").splitlines():
     if _line.strip() and not _line.startswith("#") and "=" in _line:
         _k, _, _v = _line.partition("=")

@@ -12,6 +12,8 @@ venv/
 # Local run artifacts (never commit run evidence)
 runs/
 plugin-data/
+live-tool-result.json
+rlm-demo-last-result.json
 
 # OS noise
 Thumbs.db

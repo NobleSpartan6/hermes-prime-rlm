@@ -66,3 +66,10 @@ ignore = [
 # intentionally use partial executable paths ("git") and long strings.
 "demo.py" = ["S101", "S108", "S603", "S607", "E501", "E402"]
 "demo_rlm.py" = ["S101", "S108", "S603", "S607", "E501", "E402"]
+# _launch_record.py is a local screen-recording helper (PowerShell strings).
+"_launch_record.py" = ["S101", "S603", "S607", "E501"]
+# Fixture files are deliberately naive: run_tests.py is the buggy-style oracle
+# the agent must make pass; generate_fixture.py uses seeded random for
+# deterministic data generation, not cryptography.
+"examples/*" = ["S101", "SIM115", "I001", "F401", "E501"]
+"scripts/generate_fixture.py" = ["S311"]
