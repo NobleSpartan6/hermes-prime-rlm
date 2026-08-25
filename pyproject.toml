@@ -62,6 +62,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S108", "S603", "S607", "E501"]
-# demo.py is a local demonstration runner, not product code: it intentionally
-# uses partial executable paths ("git") and long descriptive strings.
+# demo*.py are local demonstration runners, not product code: they
+# intentionally use partial executable paths ("git") and long strings.
 "demo.py" = ["S101", "S108", "S603", "S607", "E501", "E402"]
+"demo_rlm.py" = ["S101", "S108", "S603", "S607", "E501", "E402"]

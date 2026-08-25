@@ -229,3 +229,31 @@ def test_returned_final_text_is_bounded(tmp_path):
 
     limit = schemas.FINAL_TEXT_MAX_CHARS
     assert len(bounded) <= limit + len("…[truncated]")
+
+
+def test_oversized_single_event_record_maps_to_uncertain(fake_ctx, clean_repo, tmp_path):
+    """A >4MiB single event record (e.g. Prime dumping a huge tool output)
+    must yield UNCERTAIN with no checks and a preserved candidate."""
+    from conftest import prime_protocol
+
+    # Build a valid-looking stream whose middle record exceeds the cap.
+    candidate = str(clean_repo / "candidate-x")
+    header = json.dumps(
+        {"type": "session", "version": 3, "id": "s1", "timestamp": "t", "cwd": candidate}
+    ).encode()
+    start = b'{"type": "agent_start"}'
+    huge = json.dumps(
+        {
+            "type": "tool_execution_update",
+            "toolCallId": "x",
+            "toolName": "ipython",
+            "partialResult": {"content": [{"type": "text", "text": "x" * (prime_protocol.MAX_EVENT_RECORD_BYTES + 1)}]},
+        }
+    ).encode()
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(header + b"\n" + start + b"\n" + huge + b"\n")
+
+    result = prime_protocol.parse_event_stream(str(path), candidate)
+    assert result.valid is False
+    assert result.error_code == "EVENT_RECORD_TOO_LARGE"
+
