@@ -3,8 +3,8 @@ import os
 import subprocess
 from pathlib import Path
 
-repo = Path(r"C:\Users\ebene\hermes rlm\hermes-prime-rlm")
-fixture = Path(r"C:\Users\ebene\hermes rlm\rlm-fixture\payments-api")
+repo = Path(__file__).resolve().parent
+fixture = repo / "examples" / "payments-api"
 venv_python = (
     Path(os.environ["LOCALAPPDATA"]) / "hermes" / "hermes-agent" / "venv" / "Scripts" / "python.exe"
 )
