@@ -34,7 +34,12 @@ jobs:
         shell: bash
         run: |
           python -m pip install "pytest==9.1.1" "ruff==0.16.4"
-          python -m pip install "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_COMMIT}"
+          git init "$RUNNER_TEMP/hermes-agent"
+          git -C "$RUNNER_TEMP/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git
+          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth=1 origin "$HERMES_COMMIT"
+          git -C "$RUNNER_TEMP/hermes-agent" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "$HERMES_COMMIT"
+          python -m pip install --editable "$RUNNER_TEMP/hermes-agent"
       - run: python -m ruff check .
       - run: python -m pytest -q
       - run: python -m hermes_cli.main plugins doctor . --ci
@@ -56,9 +61,15 @@ jobs:
           git config --global user.name "CI Runner"
           git config --global init.defaultBranch main
       - name: Install pinned verification dependencies
+        shell: bash
         run: |
           python -m pip install "pytest==9.1.1" "ruff==0.16.4" "build==1.5.0"
-          python -m pip install "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_COMMIT}"
+          git init "$RUNNER_TEMP/hermes-agent"
+          git -C "$RUNNER_TEMP/hermes-agent" remote add origin https://github.com/NousResearch/hermes-agent.git
+          git -C "$RUNNER_TEMP/hermes-agent" fetch --depth=1 origin "$HERMES_COMMIT"
+          git -C "$RUNNER_TEMP/hermes-agent" checkout --detach FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/hermes-agent" rev-parse HEAD)" = "$HERMES_COMMIT"
+          python -m pip install --editable "$RUNNER_TEMP/hermes-agent"
       - name: Verify tag matches project version
         run: |
           test "$GITHUB_REF_NAME" = "v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
