@@ -32,6 +32,7 @@ def _invoke(fake_ctx, repo, scenario, checks, timeout=120, extra_env=None):
                 "checks": checks,
                 "runtime_timeout_seconds": timeout,
             },
+            _ctx=fake_ctx,
             source="e2e-test",
         )
     finally:
@@ -137,6 +138,92 @@ def test_successful_flow_verified(fake_ctx, clean_repo, tmp_path, passing_check)
     # Changed paths recorded in the receipt match the compact result.
     assert envelope["receipt"]["changed_paths"] == changed
 
+    # v0.1.1 separates observed facts instead of overloading VERIFIED.
+    assert envelope["receipt"]["execution_status"] == "COMPLETED"
+    assert envelope["receipt"]["candidate_status"] == "UNQUIESCED"
+    assert envelope["receipt"]["verification_status"] == "PASSED"
+    assert envelope["receipt"]["verification_authority"] == "MODEL_PROPOSED"
+    assert envelope["receipt"]["integrity_status"] == "RECORDED_NOT_REVALIDATED"
+    assert envelope["receipt"]["authenticity_status"] == "UNSIGNED"
+    assert envelope["receipt"]["acceptance_status"] == "PENDING"
+    assert envelope["receipt"]["candidate_stability"] == "unknown"
+    assert envelope["receipt"]["candidate_may_have_partial_changes"] is True
+
+    # v0.1.1: command identity is bound without persisting raw argv tokens.
+    assert "prime_argv" not in envelope["receipt"]
+    identity = envelope["receipt"].get("prime_command_identity")
+    assert identity and len(identity["argv_sha256"]) == 64
+    assert len(identity["executable_sha256"]) == 64
+    assert identity["executable_name"]
+    assert len(identity["script_sha256"]) == 64
+
+    # v0.1.1: proposal digest (pre-check) present and matches post-check when
+    # the check did not mutate anything.
+    proposal = envelope["receipt"].get("proposal_tree_sha256")
+    assert proposal, "receipt must record pre-check proposal tree digest"
+    assert proposal == envelope["receipt"]["candidate_tree_sha256"]
+
+    # v0.1.1: real duration — started_at precedes finished_at by > 0.
+    started = envelope["receipt"]["started_at"]
+    finished = envelope["receipt"]["finished_at"]
+    assert started < finished, f"started_at {started} must precede finished_at {finished}"
+
+
+def test_receipt_records_source_checkout_unchanged(fake_ctx, clean_repo, passing_check):
+    """The active checkout's pre/post identity is bound into the receipt."""
+    result = _invoke(fake_ctx, clean_repo, "success_tracked_change", [passing_check()])
+    assert result["status"] == "VERIFIED"
+    receipt = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+    assert receipt["receipt"]["source_checkout_unchanged"] is True
+
+
+def test_post_admission_internal_failure_still_writes_failed_receipt(
+    fake_ctx, clean_repo, monkeypatch
+):
+    """Every admitted run gets a receipt, even when evidence finalization crashes."""
+
+    def boom(*_args, **_kwargs):
+        raise OSError("simulated evidence failure")
+
+    monkeypatch.setattr(tools, "_collect_evidence", boom)
+    result = _invoke(fake_ctx, clean_repo, "success_tracked_change", [_passing_check()])
+    assert result["status"] == "FAILED"
+    assert result["ok"] is False
+    assert result["receipt_path"]
+    envelope = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+    assert envelope["receipt"]["status"] == "FAILED"
+    assert envelope["receipt"]["candidate_status"] == "UNQUIESCED"
+    assert envelope["receipt"]["authenticity_status"] == "UNSIGNED"
+    assert envelope["receipt"]["verification_authority"] == "MODEL_PROPOSED"
+
+
+def test_post_admission_validation_error_still_finalizes_receipt(
+    fake_ctx, clean_repo, monkeypatch
+):
+    from conftest import schemas
+
+    def fail_worktree(*_args, **_kwargs):
+        raise schemas.ValidationError("WORKTREE_TEST_FAILURE", "simulated")
+
+    monkeypatch.setattr(tools, "create_detached_worktree", fail_worktree)
+    result = _invoke(fake_ctx, clean_repo, "success_tracked_change", [_passing_check()])
+    assert result["status"] == "FAILED"
+    assert result["error_code"] == "WORKTREE_TEST_FAILURE"
+    envelope = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+    assert envelope["receipt"]["status"] == "FAILED"
+    assert envelope["receipt"]["error_code"] == "WORKTREE_TEST_FAILURE"
+    assert envelope["receipt"]["verification_authority"] == "MODEL_PROPOSED"
+
+
+def test_missing_proposal_digest_degrades_before_checks(fake_ctx, clean_repo, monkeypatch):
+    """No proposal identity means no check execution and no VERIFIED label."""
+    monkeypatch.setattr(tools, "candidate_tree_digest_safe", lambda _layout: "")
+    result = _invoke(fake_ctx, clean_repo, "success_tracked_change", [_passing_check()])
+    assert result["status"] == "UNCERTAIN"
+    assert result["checks"] == []
+    envelope = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+    assert envelope["receipt"]["verification_status"] == "NOT_RUN"
+
 
 def test_second_invocation_creates_distinct_run(fake_ctx, clean_repo, passing_check):
     first = _invoke(fake_ctx, clean_repo, "success_no_changes", [])
@@ -149,8 +236,16 @@ def test_second_invocation_creates_distinct_run(fake_ctx, clean_repo, passing_ch
 def test_empty_checks_yield_completed_unverified(fake_ctx, clean_repo):
     result = _invoke(fake_ctx, clean_repo, "success_tracked_change", [])
     assert result["status"] == "COMPLETED_UNVERIFIED"
-    assert result["ok"] is True  # completed, but never "verified"
+    # ok now means VERIFIED ONLY — an unverified completion is not ok=true,
+    # but the run itself did complete (explicit `completed` boolean).
+    assert result["ok"] is False
+    assert result["completed"] is True
+    assert result["verified"] is False
     assert result["status"] != "VERIFIED"
+    receipt = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))["receipt"]
+    assert receipt["execution_status"] == "COMPLETED"
+    assert receipt["verification_status"] == "NOT_RUN"
+    assert receipt["verification_authority"] == "NONE"
 
 
 def test_failing_check_yields_failed_verification(fake_ctx, clean_repo):
@@ -208,6 +303,7 @@ def test_uncertain_flow_timeout(fake_ctx, clean_repo):
     receipt = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
     assert receipt["receipt"]["status"] == "UNCERTAIN"  # 8. evidence preserved
     assert receipt["receipt"]["automatic_retry_allowed"] is False
+    assert receipt["receipt"]["verification_authority"] == "MODEL_PROPOSED"
 
     # 5./6. Candidate remains with the partial edit visible.
     candidate = Path(result["candidate_path"])

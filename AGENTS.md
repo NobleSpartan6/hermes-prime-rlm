@@ -10,8 +10,8 @@ Instructions for AI coding agents working in this repository.
    limited to `pytest` and `ruff`.
 3. **Windows and macOS behavior must stay equal.** Every platform-specific
    repair ships with a deterministic test.
-4. **Never substitute agent textual claims for host evidence.** Verification
-   status comes only from independently executed checks.
+4. **Never substitute agent textual claims for host observations.** Verification
+   status comes only from recorded checks executed by the host.
 5. **Never add automatic retries** for admitted runs. One invocation = one
    Prime process.
 6. **Never modify the active checkout.** Candidates live in detached
@@ -40,7 +40,7 @@ Run all three gates and paste real output:
 - workspace.py — run dirs, atomic writes, detached worktrees, task envelope
 - platform_runtime.py — the ONLY module with platform-specific process logic
 - prime_process.py — Prime argv construction + lifecycle
-- prime_protocol.py — independent JSONL stream validation
+- prime_protocol.py — host-side JSONL stream validation
 - verification.py — host-side check execution
 - evidence.py — NUL-safe porcelain parsing, diffs, tree digest
 - receipt.py — canonical, deterministic receipts

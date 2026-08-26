@@ -242,6 +242,18 @@ def test_repeated_scans_deterministic(tmp_path):
     assert first == second == third
 
 
+def test_tree_digest_streams_regular_files(tmp_path, monkeypatch):
+    d = tmp_path / "streamed"
+    d.mkdir()
+    (d / "blob.bin").write_bytes(b"x" * (2 * 1024 * 1024))
+
+    def forbid_read_bytes(_path):
+        raise AssertionError("candidate_tree_digest must stream, not Path.read_bytes()")
+
+    monkeypatch.setattr(Path, "read_bytes", forbid_read_bytes)
+    assert len(evidence.candidate_tree_digest(str(d))) == 64
+
+
 def test_traversal_outside_candidate_fails_closed(tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()

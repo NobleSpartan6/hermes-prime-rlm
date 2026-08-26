@@ -6,6 +6,7 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+.artifact-site/
 .venv/
 venv/
 

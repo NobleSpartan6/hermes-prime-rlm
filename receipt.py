@@ -17,12 +17,16 @@ from datetime import UTC, datetime
 
 from .models import CandidateStability, ChangedPaths, CheckResult, PrimeObservation, Status
 
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 RECEIPT_SCHEMA_VERSION = 1
 
 LIMITATIONS = [
     "not_a_security_sandbox",
     "verification_is_limited_to_recorded_checks",
+    "candidate_quiescence_not_proven",
+    "evidence_not_independently_custodied",
+    "receipt_unsigned",
+    "checks_may_be_model_proposed",
     "candidate_not_applied",
     "no_automatic_retry",
 ]
@@ -65,12 +69,50 @@ def build_receipt(
     checks: list[CheckResult],
     started_at: str,
     candidate_stability: CandidateStability,
+    prime_argv: list[str] | None = None,
+    prime_command_identity: dict | None = None,
+    proposal_tree_sha256: str = "",
+    source_checkout_unchanged: bool | None = None,
+    verification_authority: str = "NONE",
+    error_code: str | None = None,
 ) -> dict:
-    """Assemble the schema-v1 receipt payload. Never includes env or secrets."""
-    return {
+    """Assemble the schema-v1 receipt payload. Never includes env or secrets.
+
+    v0.1.1 additions (still schema 1; all new fields optional so the dashboard
+    can render older receipts):
+    * ``prime_command_identity`` — SHA-256 identities for the effective argv,
+      resolved executable, and first file-valued script argument.
+    * ``proposal_tree_sha256`` — candidate tree digest taken BEFORE checks ran,
+      distinguishing Prime's proposal from verifier-induced mutation
+      (``candidate_tree_sha256`` remains the post-check digest).
+    * ``source_checkout_unchanged`` — post-run observational check of the
+      active checkout against its pre-run HEAD + cleanliness identity.
+    """
+    payload: dict = {
         "schema_version": RECEIPT_SCHEMA_VERSION,
         "run_id": run_id,
         "status": status.value,
+        "execution_status": (
+            "COMPLETED"
+            if status
+            in (Status.VERIFIED, Status.COMPLETED_UNVERIFIED, Status.FAILED_VERIFICATION)
+            else "UNCERTAIN"
+            if status is Status.UNCERTAIN
+            else "FAILED"
+        ),
+        # v0.1.1 does not prove process-tree quiescence; state that explicitly.
+        "candidate_status": "UNQUIESCED",
+        "verification_status": (
+            "PASSED"
+            if status is Status.VERIFIED
+            else "FAILED"
+            if status is Status.FAILED_VERIFICATION
+            else "NOT_RUN"
+        ),
+        "verification_authority": verification_authority,
+        "integrity_status": "RECORDED_NOT_REVALIDATED",
+        "authenticity_status": "UNSIGNED",
+        "acceptance_status": "PENDING",
         "request_sha256": request_sha256,
         "plugin_version": PLUGIN_VERSION,
         "prime_agent_version": prime_agent_version,
@@ -96,12 +138,25 @@ def build_receipt(
         "checks": [check.to_dict() for check in checks],
         "started_at": started_at,
         "finished_at": utc_now_iso(),
-        "candidate_may_have_partial_changes": candidate_stability
-        is CandidateStability.UNKNOWN,
-        "candidate_stability": candidate_stability.value,
+        # Descendant quiescence is not proven in v0.1.1, so the legacy fields
+        # remain conservative even after a valid direct-child terminal event.
+        "candidate_may_have_partial_changes": True,
+        "candidate_stability": CandidateStability.UNKNOWN.value,
         "automatic_retry_allowed": False,
         "limitations": list(LIMITATIONS),
     }
+    # Backward-compatible parameter only: raw argv is deliberately discarded
+    # because operator prefix arguments may contain credentials.
+    del prime_argv, candidate_stability
+    if prime_command_identity:
+        payload["prime_command_identity"] = dict(prime_command_identity)
+    if proposal_tree_sha256:
+        payload["proposal_tree_sha256"] = proposal_tree_sha256
+    if source_checkout_unchanged is not None:
+        payload["source_checkout_unchanged"] = bool(source_checkout_unchanged)
+    if error_code:
+        payload["error_code"] = error_code
+    return payload
 
 
 def default_platform_record() -> dict:

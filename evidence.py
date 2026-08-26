@@ -18,8 +18,7 @@ from .schemas import (
     TREE_DIGEST_MAX_TOTAL_FILE_BYTES,
     ValidationError,
 )
-from .validation import run_git
-from .workspace import atomic_write_bytes
+from .validation import run_git, run_git_to_file
 
 
 def collect_status_z(candidate_path: str) -> list[bytes]:
@@ -76,8 +75,8 @@ def write_tracked_diff(
     base_commit: str,
     output_path: str,
 ) -> str:
-    """Write the binary-capable tracked diff vs base; returns its sha256."""
-    diff = run_git(
+    """Stream a bounded binary-capable tracked diff vs base; return sha256."""
+    run_git_to_file(
         [
             "diff",
             "--binary",
@@ -87,10 +86,10 @@ def write_tracked_diff(
             "--",
         ],
         cwd=candidate_path,
+        output_path=output_path,
+        max_stdout_bytes=64 * 1024 * 1024,
     )
-    data = diff.encode("utf-8", errors="surrogateescape")
-    atomic_write_bytes(output_path, data)
-    return hashlib.sha256(data).hexdigest()
+    return sha256_file(output_path)
 
 
 def sha256_file(path: str | os.PathLike) -> str:
@@ -150,7 +149,10 @@ def candidate_tree_digest(
             "TREE_ROOT_UNRESOLVABLE", f"candidate root cannot be resolved: {exc}"
         ) from exc
 
-    framed_parts: list[tuple[bytes, bytes]] = []
+    # Metadata stays bounded by max_entries. Regular-file contents are streamed
+    # only after path ordering is known, so max_total_file_bytes is a work bound,
+    # not an equivalent memory allocation.
+    entries: list[tuple[bytes, bytes, int, Path | bytes]] = []
     total_file_bytes = 0
     count = 0
 
@@ -205,7 +207,7 @@ def candidate_tree_digest(
                     ) from exc
                 target = os.readlink(child)
                 content = os.fsencode(target)
-                framed_parts.append((rel_bytes, _frame(rel_bytes, b"l", len(content), content)))
+                entries.append((rel_bytes, b"l", len(content), content))
                 count += 1
             elif stat.S_ISDIR(st.st_mode):
                 # Do not follow directory symlinks (lstat above already routed
@@ -219,7 +221,7 @@ def candidate_tree_digest(
                         "TRAVERSAL_OUTSIDE_CANDIDATE",
                         f"directory escapes candidate: {rel_posix}",
                     ) from exc
-                framed_parts.append((rel_bytes, _frame(rel_bytes, b"d", 0, b"")))
+                entries.append((rel_bytes, b"d", 0, b""))
                 count += 1
                 stack.append(real_dir)
             elif stat.S_ISREG(st.st_mode):
@@ -230,8 +232,7 @@ def candidate_tree_digest(
                         "TREE_TOO_LARGE",
                         f"candidate exceeds {max_total_file_bytes} regular-file bytes",
                     )
-                content = child.read_bytes()
-                framed_parts.append((rel_bytes, _frame(rel_bytes, b"f", len(content), content)))
+                entries.append((rel_bytes, b"f", size, child))
                 count += 1
             else:
                 raise TreeDigestLimitExceeded(
@@ -243,15 +244,51 @@ def candidate_tree_digest(
                     f"candidate exceeds {max_entries} entries",
                 )
 
-    framed_parts.sort(key=lambda pair: pair[0])
+    entries.sort(key=lambda item: item[0])
     digest = hashlib.sha256()
     digest.update(b"HPRLM-TREE-V1")
-    for _, frame in framed_parts:
-        digest.update(frame)
+    for rel, kind, size, payload in entries:
+        digest.update(_frame_header(rel, kind, size, size))
+        if kind == b"f":
+            path = payload
+            if not isinstance(path, Path):  # pragma: no cover - internal invariant
+                raise TreeDigestLimitExceeded("TREE_INTERNAL_ERROR", "file entry lost its path")
+            try:
+                with open(path, "rb") as handle:
+                    current = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(current.st_mode) or current.st_size != size:
+                        raise TreeDigestLimitExceeded(
+                            "TREE_CHANGED_DURING_DIGEST",
+                            f"file changed while hashing: {path.relative_to(root_real).as_posix()}",
+                        )
+                    remaining = size
+                    while remaining:
+                        chunk = handle.read(min(1 << 20, remaining))
+                        if not chunk:
+                            raise TreeDigestLimitExceeded(
+                                "TREE_CHANGED_DURING_DIGEST",
+                                "file shrank while hashing: "
+                                f"{path.relative_to(root_real).as_posix()}",
+                            )
+                        digest.update(chunk)
+                        remaining -= len(chunk)
+                    if handle.read(1):
+                        raise TreeDigestLimitExceeded(
+                            "TREE_CHANGED_DURING_DIGEST",
+                            f"file grew while hashing: {path.relative_to(root_real).as_posix()}",
+                        )
+            except OSError as exc:
+                raise TreeDigestLimitExceeded(
+                    "TREE_UNREADABLE", f"cannot stream file {path}: {exc}"
+                ) from exc
+        else:
+            if not isinstance(payload, bytes):  # pragma: no cover - internal invariant
+                raise TreeDigestLimitExceeded("TREE_INTERNAL_ERROR", "non-file entry lost bytes")
+            digest.update(payload)
     return digest.hexdigest()
 
 
-def _frame(rel: bytes, kind: bytes, size: int, content: bytes) -> bytes:
+def _frame_header(rel: bytes, kind: bytes, size: int, content_len: int) -> bytes:
     import struct
 
     return b"".join(
@@ -262,10 +299,13 @@ def _frame(rel: bytes, kind: bytes, size: int, content: bytes) -> bytes:
             struct.pack("<Q", len(kind)),
             kind,
             struct.pack("<Q", size),
-            struct.pack("<Q", len(content)),
-            content,
+            struct.pack("<Q", content_len),
         ]
     )
+
+
+def _frame(rel: bytes, kind: bytes, size: int, content: bytes) -> bytes:
+    return _frame_header(rel, kind, size, len(content)) + content
 
 
 __all__ = [

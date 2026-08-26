@@ -3,8 +3,8 @@ process-group logic (spec §15).
 
 Design invariants:
 * ``shell=False`` everywhere. ``os.system`` nowhere. No interpolated shells.
-* stdout/stderr stream straight to files — output is never accumulated
-  unbounded in memory.
+* stdout/stderr are concurrently drained through bounded pipes — output is
+  never accumulated unbounded in memory or on disk.
 * Monotonic time for durations.
 * Windows: ``CREATE_NEW_PROCESS_GROUP`` + ``CREATE_NO_WINDOW``; tree kill via
   argv-list ``taskkill /PID <pid> /T /F`` (never through a shell).
@@ -21,6 +21,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +46,74 @@ class ProcessTimeout(RuntimeError):
     """The owned process exceeded its deadline and termination was attempted."""
 
 
+# Write-time cap for child stdout/stderr log sinks. A child that ignores its
+# runtime bound can still not fill the disk through these files. 64 MiB per
+# stream matches the event-stream parser's own record-file bound.
+LOG_SINK_MAX_BYTES = 64 * 1024 * 1024
+_TRUNCATION_MARKER_SUFFIX = ".truncated"
+
+
+class BoundedFileSink:
+    """Drain a child pipe to disk without ever exceeding ``max_bytes``.
+
+    Once the cap is reached, the sink replaces the tail with an explicit
+    truncation notice, discards all further bytes while continuing to drain the
+    pipe (so the child cannot deadlock), and writes a ``.truncated`` sidecar.
+    """
+
+    _TRUNCATION_NOTICE = (
+        b"\n[prime-rlm: output truncated at LOG_SINK_MAX_BYTES; "
+        b"excess discarded]\n"
+    )
+
+    def __init__(self, path: str, max_bytes: int | None = None) -> None:
+        self.path = path
+        self.max_bytes = LOG_SINK_MAX_BYTES if max_bytes is None else max_bytes
+        self.truncated = False
+        self.error: OSError | None = None
+
+    def drain(self, stream) -> None:
+        """Read *stream* to EOF, writing at most ``max_bytes`` bytes."""
+        notice = self._TRUNCATION_NOTICE[: self.max_bytes]
+        content_limit = max(0, self.max_bytes - len(notice))
+        written = 0
+        try:
+            with open(self.path, "wb") as handle:
+                while True:
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    if self.truncated:
+                        continue
+                    if written + len(chunk) <= self.max_bytes:
+                        handle.write(chunk)
+                        written += len(chunk)
+                        continue
+
+                    # First overflow: reserve room for the marker inside the
+                    # cap, retain the prefix, then discard every later byte.
+                    if written > content_limit:
+                        handle.truncate(content_limit)
+                        handle.seek(content_limit)
+                        written = content_limit
+                    elif written < content_limit:
+                        keep = min(len(chunk), content_limit - written)
+                        handle.write(chunk[:keep])
+                        written += keep
+                    handle.write(notice)
+                    written += len(notice)
+                    self.truncated = True
+                handle.flush()
+                os.fsync(handle.fileno())
+            if self.truncated:
+                Path(self.path + _TRUNCATION_MARKER_SUFFIX).touch(exist_ok=True)
+        except OSError as exc:
+            self.error = exc
+        finally:
+            with contextlib.suppress(Exception):
+                stream.close()
+
+
 # ---------------------------------------------------------------------------
 # Executable resolution
 # ---------------------------------------------------------------------------
@@ -63,6 +132,21 @@ def _resolve_taskkill() -> str | None:
     if candidate.is_file():
         return str(candidate)
     return shutil.which("taskkill")
+
+
+def _resolve_cmd() -> str | None:
+    """Resolve the Windows command processor to an absolute trusted path."""
+    if not IS_WINDOWS:
+        return None
+    comspec = os.environ.get("COMSPEC")
+    if comspec and Path(comspec).is_absolute() and Path(comspec).is_file():
+        return str(Path(comspec))
+    system_root = os.environ.get("SYSTEMROOT")
+    candidate = Path(system_root or r"C:\Windows") / "System32" / "cmd.exe"
+    if candidate.is_file():
+        return str(candidate)
+    resolved = shutil.which("cmd.exe")
+    return str(Path(resolved).resolve()) if resolved else None
 
 
 def resolve_executable(token: str) -> str | None:
@@ -100,12 +184,12 @@ def is_cmd_shim(executable: str) -> bool:
 
 
 def guard_shim_argument(value: str) -> None:
-    """Fail closed when a shim-bound argument contains cmd-active characters.
-
-    Rationale documented on :data:`_CMD_SHIM_FORBIDDEN_CHARS`. Spaces,
-    parentheses, commas-in-words, unicode, and newlines-free ordinary text all
-    pass; anything cmd.exe could turn into structure is refused pre-spawn.
-    """
+    """Fail closed when a shim-bound argument contains cmd structure."""
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError(
+            "argument cannot be passed through a Windows .cmd/.bat shim "
+            "(contains a control character); use a direct executable instead"
+        )
     for ch in _CMD_SHIM_FORBIDDEN_CHARS:
         if ch in value:
             raise ValueError(
@@ -206,7 +290,10 @@ def build_shim_argv(shim: str, args: list[str]) -> list[str]:
 
     shim_token = token(shim)
     tail = " ".join(token(a) for a in args)
-    return ["cmd.exe", "/d", "/s", "/c", f"{shim_token} {tail}".strip()]
+    cmd = _resolve_cmd()
+    if cmd is None:
+        raise FileNotFoundError("cannot resolve trusted absolute cmd.exe path")
+    return [cmd, "/d", "/s", "/c", f"{shim_token} {tail}".strip()]
 
 
 def resolve_command_prefix(prefix: list[str]) -> list[str]:
@@ -240,14 +327,48 @@ class SpawnSpec:
     stdout_path: str
     stderr_path: str
     env: dict | None = None
+    stdout_max_bytes: int | None = None
+    stderr_max_bytes: int | None = None
 
 
 class OwnedProcess:
-    """A started subprocess whose lifetime this plugin owns."""
+    """A started subprocess whose lifetime and output drains this plugin owns."""
 
-    def __init__(self, popen: subprocess.Popen, argv: list[str]) -> None:
+    def __init__(
+        self,
+        popen: subprocess.Popen,
+        argv: list[str],
+        drains: list[tuple[BoundedFileSink, object]],
+    ) -> None:
         self.popen = popen
         self.argv = argv
+        self._drains: list[tuple[BoundedFileSink, object, threading.Thread]] = []
+        for sink, stream in drains:
+            thread = threading.Thread(
+                target=sink.drain,
+                args=(stream,),
+                name=f"prime-rlm-drain-{Path(sink.path).name}",
+                daemon=True,
+            )
+            thread.start()
+            self._drains.append((sink, stream, thread))
+
+    def finish_output(self, timeout: float = _TERMINATION_GRACE_SECONDS) -> bool:
+        """Wait for both pipe drains; false means output custody is ambiguous."""
+        deadline = time.monotonic() + timeout
+        for _sink, _stream, thread in self._drains:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        complete = all(not thread.is_alive() for _s, _p, thread in self._drains)
+        if not complete:
+            # A descendant may still hold inherited pipe handles. Close our
+            # readers and report ambiguity rather than blocking forever.
+            for _sink, stream, thread in self._drains:
+                if thread.is_alive():
+                    with contextlib.suppress(Exception):
+                        stream.close()
+            for _sink, _stream, thread in self._drains:
+                thread.join(0.2)
+        return complete and all(sink.error is None for sink, _p, _t in self._drains)
 
     @property
     def pid(self) -> int:
@@ -291,7 +412,8 @@ class OwnedProcess:
         with contextlib.suppress(Exception):
             subprocess.run(  # noqa: S603 - fixed argv, no shell, own child only
                 [taskkill, "/PID", str(self.pid), "/T", "/F"],
-                capture_output=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 timeout=_TERMINATION_GRACE_SECONDS,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
@@ -330,27 +452,33 @@ def popen_kwargs_for_platform() -> dict:
 
 
 def spawn_owned(spec: SpawnSpec) -> OwnedProcess:
-    """Start an owned process with stdout/stderr redirected to files."""
-    # Files are opened for the child's lifetime and closed immediately after
-    # Popen inherits the handles; context managers would close before spawn.
-    stdout_f = open(spec.stdout_path, "wb")  # noqa: SIM115
+    """Start an owned process with concurrently drained, bounded pipes."""
     try:
-        stderr_f = open(spec.stderr_path, "wb")  # noqa: SIM115
-        try:
-            popen = subprocess.Popen(  # noqa: S603 - argv list, shell=False
-                spec.argv,
-                cwd=spec.cwd,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout_f,
-                stderr=stderr_f,
-                env=spec.env,
-                **popen_kwargs_for_platform(),
-            )
-        finally:
-            stderr_f.close()
-    finally:
-        stdout_f.close()
-    return OwnedProcess(popen, spec.argv)
+        popen = subprocess.Popen(  # noqa: S603 - argv list, shell=False
+            spec.argv,
+            cwd=spec.cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=spec.env,
+            bufsize=0,
+            **popen_kwargs_for_platform(),
+        )
+    except OSError:
+        # Preserve the expected artifact shape on launch failure.
+        Path(spec.stdout_path).touch(exist_ok=True)
+        Path(spec.stderr_path).touch(exist_ok=True)
+        raise
+    if popen.stdout is None or popen.stderr is None:  # pragma: no cover - Popen contract
+        raise ProcessLaunchError("failed to create child output pipes")
+    return OwnedProcess(
+        popen,
+        spec.argv,
+        [
+            (BoundedFileSink(spec.stdout_path, spec.stdout_max_bytes), popen.stdout),
+            (BoundedFileSink(spec.stderr_path, spec.stderr_max_bytes), popen.stderr),
+        ],
+    )
 
 
 def spawn_and_wait(
@@ -370,18 +498,20 @@ def spawn_and_wait(
         return None, False
     try:
         code = proc.wait_monotonic(timeout_seconds)
-        return code, False
+        output_complete = proc.finish_output()
+        return code, not output_complete
     except TimeoutError:
         proc.terminate_tree_best_effort()
-        return proc.poll(), True
+        result = proc.poll()
+        proc.finish_output()
+        return result, True
 
 
 def effective_command_record(argv: list[str]) -> list[str]:
-    """Return the command record stored in evidence/receipts.
+    """Return a process-local argv copy used only to derive non-secret hashes.
 
-    Contains no secrets by construction: argv is paths + flags + the goal-free
-    fixed instruction. Kept as a function so future redaction has one choke
-    point and so tests can assert records exist and contain no env dumps.
+    The raw tokens are never persisted because operator prefix arguments may
+    contain credentials. Receipts store only ``prime_command_identity``.
     """
     return list(argv)
 

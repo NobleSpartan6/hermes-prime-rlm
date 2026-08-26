@@ -110,8 +110,6 @@ def fake_ctx(plugin_data_root, tmp_path):
     # required). Individual tests may override ctx._settings.
     command, _shim = make_fake_prime_command(tmp_path)
     ctx._settings["prime_agent_command"] = list(command)
-    # Registration stores the context on the handler (product contract).
-    tools.handle_prime_rlm_run.registration_context = ctx
     return ctx
 
 

@@ -7,9 +7,10 @@ function in this module — validation failures must leave no trace (spec §12).
 from __future__ import annotations
 
 import os
-import subprocess
+import tempfile
 from pathlib import Path, PurePath
 
+from .platform_runtime import SpawnSpec, spawn_and_wait
 from .schemas import (
     ValidationError,
     check_prime_version_compatible,
@@ -20,45 +21,75 @@ class _GitError(ValidationError):
     pass
 
 
+GIT_CAPTURE_MAX_BYTES = 8 * 1024 * 1024
+GIT_STDERR_MAX_BYTES = 64 * 1024
+PRIME_VERSION_MAX_BYTES = 64 * 1024
+
+
+def _was_truncated(path: str) -> bool:
+    return Path(path + ".truncated").exists()
+
+
+def _read_bounded_text(path: str) -> str:
+    return Path(path).read_bytes().decode("utf-8", errors="replace")
+
+
 def run_git(
     args: list[str],
     *,
     cwd: str | None = None,
     timeout: float = 60,
+    max_stdout_bytes: int = GIT_CAPTURE_MAX_BYTES,
 ) -> str:
-    """Run a read-only git command and return stdout.
-
-    argv-list only, ``shell=False`` always. Raises :class:`ValidationError`
-    with a stable error code when git is missing or the command fails.
-    """
-    git_exe = resolve_git()
-    try:
-        completed = subprocess.run(  # noqa: S603 - fixed read-only argv
-            [git_exe, *args],
+    """Run a Git command with bounded stdout/stderr capture."""
+    with tempfile.TemporaryDirectory(prefix="prime-rlm-git-") as temp:
+        stdout_path = os.fspath(Path(temp) / "stdout")
+        run_git_to_file(
+            args,
             cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            output_path=stdout_path,
             timeout=timeout,
-            **_no_window_kwargs(),
+            max_stdout_bytes=max_stdout_bytes,
         )
-    except FileNotFoundError as exc:
-        raise ValidationError("GIT_NOT_FOUND", "git executable was not found on PATH.") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise ValidationError("GIT_TIMEOUT", f"git {' '.join(args)} timed out.") from exc
-    if completed.returncode != 0:
-        stderr = (completed.stderr or "").strip()
-        raise _GitError("GIT_COMMAND_FAILED", f"git {' '.join(args)} failed: {stderr[:500]}")
-    return completed.stdout
+        return _read_bounded_text(stdout_path)
 
 
-def _no_window_kwargs() -> dict:
-    """Hide console windows for short-lived helper processes on Windows."""
-    if os.name == "nt":
-        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        return {"creationflags": flags} if flags else {}
-    return {}
+def run_git_to_file(
+    args: list[str],
+    *,
+    cwd: str | None,
+    output_path: str,
+    timeout: float = 60,
+    max_stdout_bytes: int = GIT_CAPTURE_MAX_BYTES,
+) -> None:
+    """Stream Git stdout to a bounded file and fail closed on truncation."""
+    git_exe = resolve_git()
+    with tempfile.TemporaryDirectory(prefix="prime-rlm-git-stderr-") as temp:
+        stderr_path = os.fspath(Path(temp) / "stderr")
+        spec = SpawnSpec(
+            argv=[git_exe, *args],
+            cwd=cwd or os.getcwd(),
+            stdout_path=output_path,
+            stderr_path=stderr_path,
+            stdout_max_bytes=max_stdout_bytes,
+            stderr_max_bytes=GIT_STDERR_MAX_BYTES,
+        )
+        exit_code, ambiguous = spawn_and_wait(spec, timeout)
+        if ambiguous:
+            raise ValidationError("GIT_TIMEOUT", f"git {' '.join(args)} timed out.")
+        if _was_truncated(output_path) or _was_truncated(stderr_path):
+            raise ValidationError(
+                "GIT_OUTPUT_LIMIT",
+                f"git {' '.join(args)} exceeded its bounded output limit.",
+            )
+        if exit_code is None:
+            raise ValidationError("GIT_NOT_FOUND", "git executable could not be launched.")
+        if exit_code != 0:
+            stderr = _read_bounded_text(stderr_path).strip()
+            raise _GitError(
+                "GIT_COMMAND_FAILED", f"git {' '.join(args)} failed: {stderr[:500]}"
+            )
+
 
 
 def resolve_git() -> str:
@@ -188,8 +219,15 @@ def resolve_base_commit(repository_path: str) -> str:
     return output
 
 
-def probe_prime_version(command_prefix: list[str]) -> tuple[int, int, int]:
-    """Run ``<prefix> --version`` with a bounded timeout and range-check it."""
+def probe_prime_version(
+    command_prefix: list[str],
+) -> tuple[int, int, int, str | None]:
+    """Run ``<prefix> --version`` with a bounded timeout and range-check it.
+
+    Returns ``(major, minor, patch, version_output)``. The probed output text
+    travels to the caller as a return value — never through module-global
+    state — so concurrent invocations cannot overwrite each other's evidence.
+    """
     import shutil
 
     resolved_first = _resolve_executable_token(command_prefix[0], shutil.which)
@@ -199,58 +237,43 @@ def probe_prime_version(command_prefix: list[str]) -> tuple[int, int, int]:
             f"prime-agent command prefix could not be resolved: {command_prefix[0]!r}",
         )
     argv = [resolved_first, *command_prefix[1:], "--version"]
-    try:
-        completed = subprocess.run(  # noqa: S603 - operator-configured prefix only
-            argv,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-            **_no_window_kwargs(),
+    with tempfile.TemporaryDirectory(prefix="prime-rlm-version-") as temp:
+        stdout_path = os.fspath(Path(temp) / "stdout")
+        stderr_path = os.fspath(Path(temp) / "stderr")
+        spec = SpawnSpec(
+            argv=argv,
+            cwd=os.getcwd(),
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            stdout_max_bytes=PRIME_VERSION_MAX_BYTES,
+            stderr_max_bytes=PRIME_VERSION_MAX_BYTES,
         )
-    except FileNotFoundError as exc:
-        raise ValidationError(
-            "PRIME_COMMAND_NOT_FOUND",
-            f"prime-agent executable could not be launched: {argv!r}",
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise ValidationError(
-            "PRIME_VERSION_TIMEOUT", "prime-agent --version timed out."
-        ) from exc
-    if completed.returncode != 0:
+        exit_code, ambiguous = spawn_and_wait(spec, 30)
+        if ambiguous:
+            raise ValidationError(
+                "PRIME_VERSION_TIMEOUT", "prime-agent --version timed out or did not quiesce."
+            )
+        if _was_truncated(stdout_path) or _was_truncated(stderr_path):
+            raise ValidationError(
+                "PRIME_VERSION_OUTPUT_LIMIT",
+                "prime-agent --version exceeded its bounded output limit.",
+            )
+        if exit_code is None:
+            raise ValidationError(
+                "PRIME_COMMAND_NOT_FOUND", "prime-agent executable could not be launched."
+            )
+        stdout = _read_bounded_text(stdout_path)
+        stderr = _read_bounded_text(stderr_path)
+    if exit_code != 0:
         raise ValidationError(
             "PRIME_VERSION_FAILED",
-            "prime-agent --version exited nonzero: "
-            f"{(completed.stderr or '').strip()[:300]}",
+            f"prime-agent --version exited nonzero: {stderr.strip()[:300]}",
         )
-    # npm .cmd shims on Windows may print the version to stderr (node's
-    # console.log goes through the shim's stdout only when the child inherits
-    # it directly; some shims redirect). Parse the COMBINED output so either
-    # channel works, while still failing closed on zero/multiple matches.
-    combined = f"{completed.stdout or ''}\n{completed.stderr or ''}"
+    # npm .cmd shims on Windows may print the version to stderr.
+    combined = f"{stdout}\n{stderr}"
     version = check_prime_version_compatible(combined)
-    _LAST_PROBED_VERSION_OUTPUT.set(
-        (completed.stdout or "").strip() or (completed.stderr or "").strip()
-    )
-    return version
-
-
-# Thread-local-free single-slot memo of the last successful --version text;
-# used only to persist prime-version.txt immediately after admission within
-# the same synchronous handler invocation.
-class _VersionMemo:
-    def __init__(self) -> None:
-        self._value: str | None = None
-
-    def set(self, value: str | None) -> None:
-        self._value = value
-
-    def get(self) -> str | None:
-        return self._value
-
-
-_LAST_PROBED_VERSION_OUTPUT = _VersionMemo()
+    version_output = stdout.strip() or stderr.strip()
+    return version, version_output
 
 
 def _resolve_executable_token(token: str, which) -> str | None:
@@ -286,16 +309,18 @@ def _executable_exists(path: str) -> bool:
 def admit_request(
     repository_path: str,
     command_prefix: list[str],
-) -> tuple[str, str]:
-    """Run every pre-admission check. Returns ``(repo_root, base_commit)``.
+) -> tuple[str, str, str | None]:
+    """Run every pre-admission check. Returns ``(repo_root, base_commit, prime_version_text)``.
 
     Order matters: all cheap local checks before the version probe. Any
     failure raises ValidationError and leaves zero new files behind.
+    The probed version text is returned (not stored globally) so the caller
+    persists it inside the same invocation without shared mutable state.
     """
     repo_root = validate_repository_root(repository_path)
     reject_submodules(repo_root)
     require_clean_repository(repo_root)
     base_commit = resolve_base_commit(repo_root)
     resolve_git()  # explicit gate per spec §12.11 even though run_git resolves it too
-    probe_prime_version(command_prefix)
-    return repo_root, base_commit
+    _version_tuple, version_text = probe_prime_version(command_prefix)
+    return repo_root, base_commit, version_text

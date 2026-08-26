@@ -2,9 +2,10 @@
 
 Exposes exactly one model-facing tool, ``prime_rlm_run``, which runs a bounded
 Prime Agent RLM coding task inside a detached Git worktree ("candidate"),
-independently verifies the result with host-executed checks, and returns a
-deterministic receipt. The active source checkout is never modified and the
-candidate is never applied automatically.
+runs host-observed checks, and returns an unsigned review receipt. The
+ordinary source files are expected to remain untouched and the candidate is
+never applied automatically; this plugin is not a security sandbox or an
+adversarially trustworthy attestation system.
 
 Runtime dependencies: Python standard library only.
 
@@ -15,7 +16,7 @@ Research or Prime Intellect product.
 from __future__ import annotations
 
 PLUGIN_NAME = "prime-rlm"
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 
 __all__ = ["register", "PLUGIN_NAME", "PLUGIN_VERSION"]
 

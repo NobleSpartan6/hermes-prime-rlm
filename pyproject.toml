@@ -1,20 +1,20 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-prime-rlm"
-version = "0.1.0"
-description = "Hermes Agent plugin: run a bounded Prime Agent RLM coding task in a detached Git worktree and return independently executed verification evidence."
+version = "0.1.1"
+description = "Hermes Agent plugin: generate a detached candidate worktree with Prime Agent and record host-observed checks in a review receipt."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "hermes-prime-rlm contributors" }]
 keywords = ["hermes", "prime-agent", "rlm", "git", "verification"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: MacOS",
   "Programming Language :: Python :: 3.11",
@@ -26,11 +26,15 @@ classifiers = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.4"]
 
-[tool.setuptools]
-py-modules = []
+[project.entry-points."hermes_agent.plugins"]
+prime-rlm = "hermes_prime_rlm"
 
-[tool.setuptools.packages.find]
-include = ["tests*"]
+[tool.setuptools]
+packages = ["hermes_prime_rlm"]
+package-dir = { hermes_prime_rlm = "." }
+
+[tool.setuptools.package-data]
+hermes_prime_rlm = ["plugin.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -64,10 +68,11 @@ ignore = [
 "tests/*" = ["S101", "S108", "S603", "S607", "E501"]
 # demo*.py are local demonstration runners, not product code: they
 # intentionally use partial executable paths ("git") and long strings.
-"demo.py" = ["S101", "S108", "S603", "S607", "E501", "E402"]
-"demo_rlm.py" = ["S101", "S108", "S603", "S607", "E501", "E402"]
-# _launch_record.py is a local screen-recording helper (PowerShell strings).
-"_launch_record.py" = ["S101", "S603", "S607", "E501"]
+"scripts/artifact_smoke.py" = ["S101", "S603"]
+"scripts/demo.py" = ["S101", "S108", "S603", "S607", "E501", "E402"]
+"scripts/demo_rlm.py" = ["S101", "S108", "S603", "S607", "E501", "E402"]
+# launch_record.py is a local screen-recording helper (PowerShell strings).
+"scripts/launch_record.py" = ["S101", "S603", "S607", "E501"]
 # Fixture files are deliberately naive: run_tests.py is the buggy-style oracle
 # the agent must make pass; generate_fixture.py uses seeded random for
 # deterministic data generation, not cryptography.

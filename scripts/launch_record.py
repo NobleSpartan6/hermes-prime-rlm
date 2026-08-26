@@ -3,7 +3,7 @@ import os
 import subprocess
 from pathlib import Path
 
-repo = Path(__file__).resolve().parent
+repo = Path(__file__).resolve().parent.parent
 fixture = repo / "examples" / "payments-api"
 venv_python = (
     Path(os.environ["LOCALAPPDATA"]) / "hermes" / "hermes-agent" / "venv" / "Scripts" / "python.exe"
@@ -27,19 +27,20 @@ Write-Host '    programmed against, not read. That is the RLM difference.' -Fore
 Write-Host ''
 Write-Host '[2] The bug: error_rate() counts stack-trace lines as entries' -ForegroundColor Yellow
 Write-Host '    Pinned test against current code:' -ForegroundColor Gray
+Push-Location -LiteralPath '{fixture}'
 & '{kernel_python}' run_tests.py 2>&1 | ForEach-Object {{ Write-Host "    $_" -ForegroundColor Red }}
+Pop-Location
 Write-Host '    ^ FAILS.' -ForegroundColor DarkGray
 Write-Host ''
 Write-Host '[3] prime_rlm_run -> real Prime Agent (stealth/ox-alpha) in a' -ForegroundColor Yellow
 Write-Host '    detached worktree. Streaming, not reading. Please wait...' -ForegroundColor Gray
 Write-Host ''
 $env:PRIME_AGENT_KERNEL_PYTHON = '{kernel_python}'
-& '{venv_python}' .\\demo_rlm.py
+& '{venv_python}' .\\scripts\\demo_rlm.py
 Write-Host ''
-Write-Host '[4] Independent re-verification inside the candidate:' -ForegroundColor Yellow
-$latest = Get-ChildItem "$env:LOCALAPPDATA\\hermes\\plugin-data" -Recurse -Filter 'receipt.json' |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-$cand = (Get-Content $latest.FullName -Raw | ConvertFrom-Json).receipt.candidate_path
+Write-Host '[4] Host-observed re-run inside the candidate:' -ForegroundColor Yellow
+$result = Get-Content '{repo}\\rlm-demo-last-result.json' -Raw | ConvertFrom-Json
+$cand = $result.candidate_path
 Push-Location $cand
 & '{kernel_python}' run_tests.py 2>&1 | ForEach-Object {{ Write-Host "    $_" -ForegroundColor Green }}
 Pop-Location
@@ -49,7 +50,7 @@ $st = git -C '{fixture}' status --porcelain
 if ($st) {{ Write-Host "    MODIFIED: $st" -ForegroundColor Red }} else {{ Write-Host '    clean — nothing changed outside the candidate' -ForegroundColor Green }}
 Write-Host ''
 Write-Host '================================================================' -ForegroundColor Green
-Write-Host '  VERIFIED = the host check ran independently and passed.' -ForegroundColor Green
+Write-Host '  VERIFIED = the recorded host check exited zero.' -ForegroundColor Green
 Write-Host '  Nothing applied, committed, or pushed.' -ForegroundColor Green
 Write-Host '================================================================' -ForegroundColor Green
 Write-Host ''

@@ -5,6 +5,8 @@ from __future__ import annotations
 import pathlib
 import sys
 import textwrap
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -245,6 +247,11 @@ def test_shim_route_refuses_metacharacters():
         rt.guard_shim_argument('x"; & echo pwned')
     with pytest.raises(ValueError):
         rt.build_shim_argv("C:/x.cmd", ["safe", "bad&arg"])
+    for control in ("\r", "\n", "\x00", "\x1f"):
+        with pytest.raises(ValueError):
+            rt.guard_shim_argument(f"safe{control}injected")
+    safe_argv = rt.build_shim_argv("C:/x.cmd", ["safe"])
+    assert Path(safe_argv[0]).is_absolute(), "cmd.exe must resolve to a trusted absolute path"
 
 
 def test_spaces_and_parens_passed_correctly(tmp_path):
@@ -298,3 +305,41 @@ def test_environment_values_not_serialized_to_artifacts(fake_ctx, clean_repo, mo
         if path.exists():
             body = path.read_bytes()
             assert marker_value.encode() not in body, f"marker leaked into {path.name}"
+
+
+def test_log_sink_never_exceeds_cap_while_child_is_running(tmp_path, monkeypatch):
+    """The cap is enforced while bytes arrive, not repaired after process exit."""
+    monkeypatch.setattr(rt, "LOG_SINK_MAX_BYTES", 4096)
+    stdout = tmp_path / "stdout.log"
+    stderr = tmp_path / "stderr.log"
+    code = (
+        "import sys,time\n"
+        "for _ in range(2048): sys.stdout.buffer.write(b'x' * 1024)\n"
+        "sys.stdout.flush()\n"
+        "sys.stderr.write('done writing\\n'); sys.stderr.flush()\n"
+        "time.sleep(1)\n"
+    )
+    spec = rt.SpawnSpec(
+        argv=[sys.executable, "-c", code],
+        cwd=str(tmp_path),
+        stdout_path=str(stdout),
+        stderr_path=str(stderr),
+    )
+    result: list[tuple[int | None, bool]] = []
+    worker = threading.Thread(target=lambda: result.append(rt.spawn_and_wait(spec, 5)))
+    worker.start()
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if stdout.exists() and stdout.stat().st_size:
+            break
+        time.sleep(0.01)
+    time.sleep(0.2)  # child is still sleeping; inspect the live sink
+    assert stdout.stat().st_size <= rt.LOG_SINK_MAX_BYTES
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert result == [(0, False)]
+    assert stdout.stat().st_size <= rt.LOG_SINK_MAX_BYTES
+    assert Path(str(stdout) + ".truncated").exists()
+    assert b"output truncated" in stdout.read_bytes()

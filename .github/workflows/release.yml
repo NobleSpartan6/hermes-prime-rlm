@@ -1,0 +1,94 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  HERMES_COMMIT: fcbd1076a93841fa88855acce810e342a5b78101
+
+jobs:
+  acceptance:
+    name: acceptance (${{ matrix.os }}, py ${{ matrix.python-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Configure Git test identity
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI Runner"
+          git config --global init.defaultBranch main
+      - name: Install pinned verification dependencies
+        shell: bash
+        run: |
+          python -m pip install "pytest==9.1.1" "ruff==0.16.4"
+          python -m pip install "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_COMMIT}"
+      - run: python -m ruff check .
+      - run: python -m pytest -q
+      - run: python -m hermes_cli.main plugins doctor . --ci
+
+  release-artifacts:
+    needs: acceptance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Configure Git test identity
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "CI Runner"
+          git config --global init.defaultBranch main
+      - name: Install pinned verification dependencies
+        run: |
+          python -m pip install "pytest==9.1.1" "ruff==0.16.4" "build==1.5.0"
+          python -m pip install "git+https://github.com/NousResearch/hermes-agent.git@${HERMES_COMMIT}"
+      - name: Verify tag matches project version
+        run: |
+          test "$GITHUB_REF_NAME" = "v$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+      - run: python -m ruff check .
+      - run: python -m pytest -q
+      - run: python -m hermes_cli.main plugins doctor . --ci
+      - run: python -m build
+      - name: Clean-install and dispatch exact wheel
+        run: |
+          WHEEL=$(python -c 'from pathlib import Path; print(next(Path("dist").glob("*.whl")))')
+          python -m pip install --force-reinstall --no-deps "$WHEEL"
+          export HERMES_HOME="$RUNNER_TEMP/hermes-prime-artifact-home"
+          mkdir -p "$HERMES_HOME"
+          printf '_config_version: 39\nplugins:\n  enabled: [prime-rlm]\n  disabled: []\n  entries:\n    prime-rlm:\n      allow_tool_override: false\n' > "$HERMES_HOME/config.yaml"
+          cd "$RUNNER_TEMP"
+          python -c 'from hermes_cli.plugins import PluginManager; m=PluginManager(); m.discover_and_load(); p=m._plugins["prime-rlm"]; assert p.manifest.source=="entrypoint" and p.manifest.version=="0.1.1"; assert "prime_rlm_run" in m._plugin_tool_names; print("installed-entrypoint-discovery PASS"); m.unload()'
+          python "$GITHUB_WORKSPACE/scripts/artifact_smoke.py"
+      - name: Checksums
+        run: sha256sum dist/* > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: hermes-prime-rlm-${{ github.ref_name }}
+          path: |
+            dist/*
+            SHA256SUMS
+          if-no-files-found: error
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* SHA256SUMS \
+            --title "hermes-prime-rlm $GITHUB_REF_NAME" \
+            --generate-notes

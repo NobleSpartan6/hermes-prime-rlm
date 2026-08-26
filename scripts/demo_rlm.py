@@ -11,8 +11,8 @@ import os
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent
-FIXTURE = Path(__file__).resolve().parent / "examples" / "payments-api"
+REPO = Path(__file__).resolve().parent.parent
+FIXTURE = REPO / "examples" / "payments-api"
 sys.path.insert(0, str(REPO / "tests"))
 
 import importlib.util

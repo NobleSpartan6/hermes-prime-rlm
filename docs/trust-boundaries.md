@@ -1,132 +1,143 @@
-# Trust Boundaries for Agent-Produced Code
+# Trust Boundaries for `hermes-prime-rlm`
 
-*Design rationale for hermes-prime-rlm v0.1*
+*Design notes for v0.1.1*
 
-An agent that edits code is only useful if its output can be trusted without
-trusting the agent. This document records the trust decisions baked into
-`prime_rlm_run` — why the pipeline is shaped the way it is, and in particular
-why ambiguous runs degrade to `UNCERTAIN` instead of being salvaged.
+`prime_rlm_run` is a local review harness. Prime proposes changes in a detached
+Git worktree; the plugin records Prime's event stream, runs recorded checks, and
+writes an unsigned receipt. The candidate remains inert until a human or
+separate host policy accepts it.
 
-## The pipeline
+This design improves reviewability. It is not a sandbox, custody boundary, or
+tamper-resistant attestation system.
 
-```
-admission → run → verify → evidence → receipt
-```
+## Actual authority boundary
 
-Every stage has one job, and no stage may borrow authority from another.
+Hermes, Prime, the check processes, and the receipt writer normally run as the
+same OS user. That user can read and write the source checkout, candidate,
+plugin data, credentials, and receipt artifacts. A detached worktree separates
+ordinary Git edits; it does not restrict process, filesystem, network, or
+credential access.
 
-### 1. Admission — refuse before touching anything
+Consequences:
 
-The request is validated before any filesystem side effect:
+- A malicious or compromised Prime process may reach the active checkout or
+  evidence store despite being launched with the candidate as its working
+  directory.
+- Direct-child exit does not prove that every descendant stopped. Receipts say
+  `candidate_status: UNQUIESCED`.
+- The receipt self-hash proves only that its canonical payload matches its
+  embedded digest. Receipts say `authenticity_status: UNSIGNED`.
+- Artifact digests are recorded, but v0.1.1 does not revalidate every referenced
+  artifact under separate custody. Receipts say
+  `integrity_status: RECORDED_NOT_REVALIDATED`.
 
-- **Clean-tree gate.** The source repository must have zero tracked or
-  untracked changes (`DIRTY_REPOSITORY` otherwise). A dirty base would make
-  the diff-vs-base meaningless and could silently mix operator work with
-  agent output. (In practice this gate earns its keep: stale `__pycache__/`
-  directories rejected two of our own live runs before anything was created.)
-- **Version pinning.** Prime Agent must be `>=0.8.0,<0.9.0`, probed by running
-  `--version` — not taken from config text. The JSON event-stream schema is
-  pinned to version 3 *independently* of the version gate, so a wrapper that
-  lies about its version still can't feed us an unparsed stream.
-- **Operator-owned command.** The Prime executable comes from plugin settings,
-  never from model input. The model can request a goal; it can never choose
-  what binary runs or with which flags.
+Stronger claims require a worker/coordinator/evidence privilege split, process-
+tree fencing, and signed source-bound receipts whose signing key is unavailable
+to Prime.
 
-### 2. Run — isolate, don't sandbox
+## Pipeline
 
-Prime works inside a detached worktree created from the frozen commit. The
-active checkout cannot be touched by ordinary edits; the candidate is preserved
-after every outcome, including failures.
-
-This is deliberately *not* called a sandbox. Model-generated code runs with the
-user's permissions: process, network, and credential access are uncontained.
-Honesty about this boundary shapes every other decision — since we can't
-contain the agent at runtime, we contain its *claims* at verification time.
-
-### 3. Verify — evidence over assertion
-
-The single most important rule: **agent textual claims carry zero verification
-authority.** "All tests passed" in Prime's final message is prose, not proof.
-Proof is only ever:
-
-```
-host executed recorded argv inside candidate → observed exit code 0
+```text
+admission → candidate run → protocol observation → recorded checks → receipt
 ```
 
-Consequences that fall out of this rule:
+### Admission
 
-- **Empty checks ⇒ COMPLETED_UNVERIFIED, never success.** If the caller
-  supplies no verification commands, there is nothing to observe. A run with
-  no checks can never be `VERIFIED`, no matter how confident the agent sounds.
-- **Checks are host-executed, verbatim.** The argv list recorded in the request
-  is what runs, in the candidate directory, with the host as the witness. The
-  agent cannot choose its own tests at verification time.
-- **`VERIFIED` is deliberately weak.** It means exactly "the recorded commands
-  exited 0 against the recorded candidate" — not semantic correctness, not
-  security review, not reproducibility. Overclaiming a green status is how
-  verification theater starts; the receipt's limitations field says so
-  explicitly on every run.
+Before creating a run directory, the plugin validates the request, resolves the
+current commit, requires a clean source checkout, and probes a supported Prime
+Agent version. The Prime command comes from operator plugin settings, not the
+tool request.
 
-### 4. Evidence & receipt — deterministic, hashable
+Admission is a consistency gate, not a security boundary. A same-user process
+can still change the checkout after admission.
 
-Each run directory preserves the full chain: canonical request envelope, task
-envelope, the complete event stream, stderr, the tracked diff vs base, per-check
-logs, and a final receipt whose content hash (`receipt_sha256`) covers all of
-it. Receipts are built deterministically (sorted keys, stable ordering) so two
-runs with identical outcomes produce identical bytes — a reviewer can recompute
-any hash without trusting our serialization.
+### Candidate run
 
-## Why UNCERTAIN exists (and why it never auto-recovers)
+The plugin creates a detached worktree from the admitted commit and launches one
+Prime process with bounded stdout/stderr sinks. It never retries automatically
+and never auto-applies, commits, merges, pushes, or deletes the candidate.
 
-The hard design case is ambiguity. During live testing we hit this exact
-failure mode (`run 820c4f4e`):
+Output files are bounded while the child runs. On timeout the plugin attempts
+tree termination using the platform's available process-group mechanism. It
+does not claim control over independently daemonized descendants.
 
-> Prime did the work correctly — the candidate passed the oracle test when we
-> checked by hand afterward. But its event stream contained an `agent_end`
-> without a matching `agent_start`. The protocol validator couldn't establish
-> a reliable terminal boundary.
+The admission-time version probe and Git helpers use the same bounded-drain
+model. Tracked patches stream directly to their evidence file; candidate-tree
+content streams into the digest. Any truncation or size overrun fails closed.
 
-Three options existed:
+### Protocol observation
 
-1. **Trust the outcome anyway** ("the work looks done"). Rejected: once you
-   accept a malformed lifecycle stream because the *result looks right*, you've
-   re-created the assertion-as-evidence problem one level up. A corrupted
-   stream could equally mean truncated tool output, a replayed segment, or a
-   tampered log — none of which "looks wrong."
-2. **Retry automatically.** Rejected twice over. A retry burns money on a
-   non-deterministic process to paper over an unknown; and if the anomaly was
-   caused by something environmental (a wrapper emitting extra stdout, a disk
-   hiccup), the retry reproduces it. One invocation = one Prime process, always.
-3. **Degrade to `UNCERTAIN` and preserve everything.** Chosen.
+Prime's prose has no verification authority. The plugin parses the bounded JSON
+event stream and requires an unambiguous lifecycle. Malformed, duplicated,
+incomplete, or truncated lifecycle evidence degrades to `UNCERTAIN`; checks do
+not run.
 
-`UNCERTAIN` is honest ignorance, encoded:
+### Recorded checks
 
-- No checks are executed (running checks against a candidate of unknown
-  provenance manufactures false confidence).
-- `candidate_stability` is `"unknown"` and `candidate_may_have_partial_changes`
-  is `true` — the receipt never pretends the tree is coherent when the stream
-  wasn't.
-- `automatic_retry_allowed` is always `false`. Recovery is a human decision:
-  read the evidence, decide whether the candidate is worth keeping, start a new
-  run explicitly if desired.
+After a valid Prime terminal event, the plugin hashes the proposal tree and then
+runs the recorded check argv inside the candidate. `VERIFIED` is a convenience
+label meaning those checks exited zero. It does not mean the candidate is
+semantically correct, safe, quiescent, authentic, or accepted.
 
-The cost is occasional friction — a correct fix arrives wrapped in `UNCERTAIN`
-and someone must look at it manually, as we did. That friction is the product.
-A status system that quietly promotes ambiguous runs to success will eventually
-promote a wrong one, and nobody will know which runs to distrust.
+In v0.1.1, checks supplied through the tool request are labeled
+`verification_authority: MODEL_PROPOSED`; no operator repository policy root is
+yet implemented. Empty checks produce `COMPLETED_UNVERIFIED` and
+`verification_status: NOT_RUN`.
 
-## What acceptance means
+Checks run in the canonical candidate and may mutate it. The receipt records a
+pre-check proposal-tree digest and a post-check candidate-tree digest so that
+mutation is visible; it does not pretend checks ran against an immutable copy.
 
-Because candidates are never applied automatically, every run ends the same
-way regardless of status: a human (or a downstream host policy) compares the
-receipt against the preserved candidate and decides. The tool's job is to make
-that decision cheap and evidence-backed — not to make it for you.
+### Receipt
 
-## Summary of invariants
+The receipt records:
 
-1. Never modify the active checkout; candidates live in detached worktrees.
-2. Never substitute agent claims for host-executed evidence.
-3. Never mark success without at least one passing host check.
-4. Never retry automatically; ambiguity degrades to `UNCERTAIN`.
-5. Never weaken receipt semantics to make a run look better than it was.
-6. Never claim sandboxing; the worktree isolates edits, not execution.
+- admitted source commit and observed post-run checkout state;
+- effective Prime argv identity and executable/script digests;
+- bounded Prime event/stderr digests;
+- tracked patch and candidate-tree digests;
+- per-check status, duration, and output digests;
+- explicit execution, candidate, verification, authority, integrity,
+  authenticity, and acceptance axes.
+
+`receipt_sha256` is a canonical payload self-hash. It is not a signature and
+does not establish who wrote the receipt.
+
+Raw Prime argv tokens are not written to the receipt. Operator command-prefix
+arguments may contain credentials, so only a canonical argv digest and
+allowlisted executable/script basenames and file digests are retained.
+
+## Status semantics
+
+| Field | v0.1.1 meaning |
+|---|---|
+| `execution_status` | Whether the observed run completed, failed, or remained uncertain |
+| `candidate_status` | `UNQUIESCED`; descendant quiescence is not proven |
+| `verification_status` | Recorded checks passed, failed, or did not run |
+| `verification_authority` | `MODEL_PROPOSED` for request checks, or `NONE` |
+| `integrity_status` | `RECORDED_NOT_REVALIDATED` |
+| `authenticity_status` | `UNSIGNED` |
+| `acceptance_status` | `PENDING` |
+
+The legacy `status` field remains for compatibility:
+
+- `VERIFIED`: valid terminal stream and every recorded check exited zero.
+- `COMPLETED_UNVERIFIED`: valid terminal stream and no checks.
+- `FAILED_VERIFICATION`: at least one check failed, timed out, or failed to launch.
+- `FAILED`: a known failure; partial candidate changes may exist.
+- `UNCERTAIN`: no reliable terminal/proposal boundary; no checks run.
+
+## Acceptance
+
+Every outcome preserves the candidate and evidence. Acceptance is external to
+this plugin. Review the candidate, recorded check authority, pre/post tree
+identity, and receipt limitations before applying anything.
+
+## v0.1.1 invariants
+
+1. No automatic candidate application, commit, merge, push, retry, or deletion.
+2. No `VERIFIED` label without at least one recorded passing check.
+3. Ambiguous lifecycle or missing proposal identity degrades to `UNCERTAIN`.
+4. Prime output is bounded during execution.
+5. Every admitted terminal path attempts to finalize a receipt.
+6. Public claims distinguish host observation from custody and authenticity.

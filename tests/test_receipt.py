@@ -69,6 +69,34 @@ def test_no_environment_or_credentials_appear(tmp_path, monkeypatch):
     assert "environ" not in body.lower().replace("environment", "")
 
 
+def test_raw_prime_argv_is_never_persisted():
+    from conftest import receipt as r
+
+    built = r.build_receipt(
+        run_id="rid",
+        status=r.Status.FAILED,
+        request_sha256="0" * 64,
+        prime_agent_version="0.8.2",
+        platform_record=r.default_platform_record(),
+        repository_root="/repo",
+        base_commit="1" * 40,
+        candidate_path="/cand",
+        candidate_head="1" * 40,
+        candidate_tree_sha256="",
+        tracked_patch_sha256="",
+        prime_events_sha256="",
+        prime_stderr_sha256="",
+        changed_paths=r.ChangedPaths(),
+        observation=_FakeObservation(),
+        checks=[],
+        started_at=r.utc_now_iso(),
+        candidate_stability=r.CandidateStability.UNKNOWN,
+        prime_argv=["prime-agent", "--api-key", "receipt-secret"],
+    )
+    assert "prime_argv" not in built
+    assert "receipt-secret" not in json.dumps(built)
+
+
 def test_limitations_always_present():
     from conftest import receipt as r
 

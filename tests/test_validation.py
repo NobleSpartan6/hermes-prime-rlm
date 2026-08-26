@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from conftest import schemas, validation
 
@@ -181,6 +183,37 @@ def test_two_version_strings_rejected():
         schemas.extract_semver("compatible with 0.8.0 through 0.9.4")
 
 
+def test_noisy_prime_version_probe_fails_at_output_bound(tmp_path):
+    script = tmp_path / "noisy_version.py"
+    script.write_text("import sys\nsys.stdout.write('x' * 200000)\n", encoding="utf-8")
+    with pytest.raises(schemas.ValidationError) as exc:
+        validation.probe_prime_version([sys.executable, str(script)])
+    assert exc.value.error_code == "PRIME_VERSION_OUTPUT_LIMIT"
+
+
+def test_git_capture_and_file_output_fail_closed_at_bounds(clean_repo, tmp_path):
+    for index in range(20):
+        (clean_repo / f"untracked-{index:03d}.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(schemas.ValidationError) as exc:
+        validation.run_git(
+            ["status", "--porcelain=v1", "--untracked-files=all"],
+            cwd=str(clean_repo),
+            max_stdout_bytes=100,
+        )
+    assert exc.value.error_code == "GIT_OUTPUT_LIMIT"
+
+    tracked = clean_repo / "src.py"
+    tracked.write_text("x" * 10_000, encoding="utf-8")
+    with pytest.raises(schemas.ValidationError) as exc:
+        validation.run_git_to_file(
+            ["diff", "--binary", "--full-index", "HEAD", "--"],
+            cwd=str(clean_repo),
+            output_path=str(tmp_path / "tracked.patch"),
+            max_stdout_bytes=100,
+        )
+    assert exc.value.error_code == "GIT_OUTPUT_LIMIT"
+
+
 # --- admission leaves no trace ------------------------------------------------
 
 
@@ -196,7 +229,8 @@ def test_validation_failure_leaves_no_run_directory(fake_ctx, clean_repo):
                 "goal": "g",
                 "repository_path": str(clean_repo),
                 "checks": [],
-            }
+            },
+            fake_ctx,
         )
     assert e.value.error_code == "DIRTY_REPOSITORY"
     runs = list((fake_ctx.state.data_dir).glob("runs/*"))

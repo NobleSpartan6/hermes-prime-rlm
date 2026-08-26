@@ -98,8 +98,8 @@ HOST RULES
 3. Implement the smallest complete solution satisfying the user goal.
 4. Add or update tests for changed behavior.
 5. Do not commit, push, modify remotes, remove the worktree, or modify another checkout.
-6. Do not claim that host verification passed. The host will execute the exact
-   verification commands independently after this process exits.
+6. Do not claim that host verification passed. The host will execute the
+   recorded verification commands after this process exits.
 7. Do not place credentials or private environment values into source files,
    logs, tests, or output.
 8. Finish with a concise summary of:

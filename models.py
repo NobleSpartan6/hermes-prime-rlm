@@ -52,7 +52,7 @@ class CheckResult:
 
 @dataclass
 class PrimeObservation:
-    """What the plugin independently observed about the Prime process/stream.
+    """What the plugin observed about the Prime process/stream.
 
     Textual claims inside ``final_text`` carry no verification authority.
     """

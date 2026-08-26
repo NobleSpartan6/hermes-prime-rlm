@@ -31,7 +31,7 @@ def test_manifest_declares_exactly_one_tool():
     )
     assert provides == ["prime_rlm_run"]
     assert name == "prime-rlm"
-    assert version == "0.1.0"
+    assert version == "0.1.1"
 
 
 def test_register_registers_exactly_one_tool(fake_ctx):
@@ -43,6 +43,26 @@ def test_register_registers_exactly_one_tool(fake_ctx):
     assert tool["name"] == "prime_rlm_run"
     assert tool["toolset"] == "prime_rlm"
     assert callable(tool["handler"])
+
+
+def test_each_registration_binds_its_own_context(tmp_path, monkeypatch):
+    from conftest import FakeContext
+
+    first = FakeContext(tmp_path / "first")
+    second = FakeContext(tmp_path / "second")
+
+    def record_context(_args, ctx):
+        return {"ok": True, "data_dir": str(ctx.state.data_dir)}
+
+    monkeypatch.setattr(tools, "_run", record_context)
+    tools.register_tools(first)
+    tools.register_tools(second)
+
+    first_result = json.loads(first.registered_tools[0]["handler"]({}))
+    second_result = json.loads(second.registered_tools[0]["handler"]({}))
+    assert first_result["data_dir"] == str(first.state.data_dir)
+    assert second_result["data_dir"] == str(second.state.data_dir)
+    assert first.registered_tools[0]["handler"] is not second.registered_tools[0]["handler"]
 
 
 def test_schema_and_handler_agree(fake_ctx):
@@ -85,14 +105,18 @@ def test_import_does_not_write_runtime_state(tmp_path, monkeypatch):
     before = sorted(p.name for p in tmp_path.iterdir())
     import conftest  # re-import is a no-op; exercise the module load path
 
-    assert conftest.prime_rlm_pkg.PLUGIN_VERSION == "0.1.0"
+    assert conftest.prime_rlm_pkg.PLUGIN_VERSION == "0.1.1"
     after = sorted(p.name for p in tmp_path.iterdir())
     assert before == after
 
 
 def test_handler_accepts_kwargs_and_always_returns_json(fake_ctx):
     handler = tools.handle_prime_rlm_run
-    out = handler({"goal": "", "repository_path": "/tmp/x", "checks": []}, extra="kw")
+    out = handler(
+        {"goal": "", "repository_path": "/tmp/x", "checks": []},
+        _ctx=fake_ctx,
+        extra="kw",
+    )
     parsed = json.loads(out)
     assert isinstance(parsed, dict)
     assert parsed["ok"] is False
@@ -103,7 +127,9 @@ def test_handler_never_leaks_exceptions(fake_ctx, monkeypatch):
         raise RuntimeError("simulated internal explosion")
 
     monkeypatch.setattr(tools, "validate_goal", boom)
-    out = tools.handle_prime_rlm_run({"goal": "x", "repository_path": "/", "checks": []})
+    out = tools.handle_prime_rlm_run(
+        {"goal": "x", "repository_path": "/", "checks": []}, _ctx=fake_ctx
+    )
     parsed = json.loads(out)
     assert parsed["ok"] is False
     assert parsed["stage"] == "internal"

@@ -4,8 +4,8 @@
 
 A standalone [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugin
 that runs a bounded coding goal through **Prime Agent** (a Recursive Language
-Model agent) inside a detached Git worktree — and returns **independently
-executed verification evidence**, not the model's word.
+Model agent) inside a detached Git worktree, then records **host-observed
+checks** in an unsigned review receipt.
 
 > Hermes Prime RLM is an independent community integration. It is not an
 > official Nous Research or Prime Intellect product.
@@ -33,8 +33,9 @@ for analytics over massive corpora; practitioners use it daily for log
 forensics, Kubernetes state dumps, and incident timelines.
 
 **But an RLM that says "fixed it!" is still just a model saying words.**
-Hermes Prime RLM closes the loop: the agent works over the evidence it can
-never read directly, and a deterministic host-side harness proves the result.
+Hermes Prime RLM runs recorded checks after the agent exits and preserves the
+candidate and evidence for review. A passing check is useful local evidence;
+it is not proof of semantic correctness or adversarially independent custody.
 
 ## The demo: `examples/payments-api`
 
@@ -77,8 +78,11 @@ What comes back on a successful run:
 }
 ```
 
-`VERIFIED` means one thing only: the exact recorded commands were re-executed
-by the host inside the candidate and exited `0`. In live runs on this fixture,
+`VERIFIED` is a convenience label meaning that the recorded commands were
+executed by the host inside the candidate and exited `0`. The receipt separately
+records that the checks may be `MODEL_PROPOSED`, the candidate is `UNQUIESCED`,
+artifact integrity is `RECORDED_NOT_REVALIDATED`, authenticity is `UNSIGNED`,
+and acceptance remains `PENDING`. In live runs on this fixture,
 the agent correctly discovered from the data alone that DEBUG lines are excluded
 from the entry population (8200 / 46945 = 0.174672 exactly), documented its
 reasoning, added unit tests — and never once loaded the full file into memory.
@@ -91,31 +95,39 @@ commands, then:
 1. Freezes the repository's exact current commit.
 2. Creates a **detached candidate worktree** from that commit.
 3. Runs Prime Agent (JSON event-stream mode) inside the candidate only.
-4. **Independently validates** Prime's protocol (schema 3, one `agent_start`,
+4. Validates Prime's protocol (schema 3, one `agent_start`,
    one `agent_end`).
-5. **Independently runs** your exact verification commands inside the candidate.
-6. Writes a deterministic receipt (hashes of events, stderr, diff, tree) and
-   returns a compact result.
+5. Runs the recorded verification commands inside the candidate and observes
+   their exit status.
+6. Writes a canonically encoded, self-hashed, unsigned receipt containing
+   recorded artifact digests and a SHA-256 command identity. Raw operator
+   command arguments are never persisted because they may contain credentials;
+   the receipt keeps only hashes and allowlisted executable/script basenames,
+   then returns a compact result.
 
-The active source checkout is never modified. The candidate is never applied,
-committed, merged, pushed, retried, or deleted — acceptance is always a human
-(or host) decision.
+The plugin never applies, commits, merges, pushes, retries, or deletes the
+candidate. It checks the active checkout before and after the run, but Prime
+shares the user's OS authority and is not prevented from reaching that checkout.
+Acceptance is always a human or downstream policy decision.
 
 ## Trust boundaries
 
-Authority is split deliberately:
+Responsibilities are separated in code, but not by OS privilege:
 
 - **Hermes** owns the conversation, the decision to invoke the tool, and the
   final accept/discard decision.
 - **Prime Agent** owns its RLM trajectory, IPython environment, recursive
   subagents, and its own model/provider configuration (the plugin never selects
   a model).
-- **The plugin** owns admission, worktree creation, protocol validation, host
-  verification, evidence, and receipts.
+- **The plugin** performs admission, worktree creation, protocol validation,
+  host-observed checks, evidence collection, and receipt writing.
+
+Prime and the plugin run as the same user. A malicious or compromised worker
+may be able to alter source, candidate, or evidence, and an unsigned receipt
+self-hash does not establish provenance.
 
 Prime's textual claims have **no verification authority**. "All tests passed"
-is never evidence unless the plugin independently ran the recorded check and
-observed exit code `0`. See
+is not a host-observed check result. See
 [`docs/trust-boundaries.md`](docs/trust-boundaries.md) for the full design,
 including why ambiguous runs degrade to `UNCERTAIN` instead of guessing.
 
@@ -123,7 +135,7 @@ including why ambiguous runs degrade to `UNCERTAIN` instead of guessing.
 
 | Status | Meaning |
 |---|---|
-| `VERIFIED` | Prime exited cleanly with a valid stream **and** every supplied host check independently exited `0`. Nothing more is claimed. |
+| `VERIFIED` | Prime exited cleanly with a valid stream and every supplied recorded host check exited `0`. Check authority, quiescence, integrity, authenticity, and acceptance remain separate fields. |
 | `COMPLETED_UNVERIFIED` | Prime finished but **no checks were supplied**. Never treated as success. |
 | `FAILED_VERIFICATION` | Prime finished but a check failed, timed out, or could not launch. |
 | `FAILED` | Known failure. Candidate preserved; may contain partial changes. |
@@ -140,8 +152,15 @@ run explicitly if you choose to.
 Requires Python ≥ 3.11, Git, and **Prime Agent ≥ 0.8.0, < 0.9.0** (probed at
 admission; anything else is refused).
 
-Clone this repository, then link it into your Hermes user plugin directory
-(Windows shown; on macOS use a symlink):
+Install a release wheel into the same Python environment that runs Hermes; the
+`hermes_agent.plugins` entry point is discovered on the next startup:
+
+```bash
+python -m pip install hermes_prime_rlm-0.1.1-py3-none-any.whl
+```
+
+For source development, clone this repository and link it into your Hermes user
+plugin directory (Windows shown; on macOS use a symlink):
 
 ```powershell
 New-Item -ItemType Junction -Path "$env:LOCALAPPDATA\hermes\plugins\prime-rlm" -Target "<repo-path>"
@@ -187,7 +206,7 @@ plugins:
 ├── request.json          # canonical request envelope (sha256 in receipt)
 ├── prime-task.md         # goal + fixed host rules (goal never on a CLI)
 ├── candidate/            # detached worktree — preserved after every outcome
-├── prime-events.jsonl    # Prime stdout (validated independently)
+├── prime-events.jsonl    # bounded Prime stdout used for protocol validation
 ├── prime-stderr.log
 ├── tracked.patch         # git diff --binary --full-index vs base
 ├── status.txt
@@ -204,6 +223,10 @@ git -C <source-repo> worktree remove <candidate-path>   # manual cleanup only
 
 Nothing is removed automatically.
 
+Prime runtime logs, the version probe, Git status output, and tracked patches
+all use bounded concurrent drains. Candidate-tree file content is hashed as a
+stream rather than accumulated in memory. Bound overruns fail closed.
+
 ## Non-goals (v0.1)
 
 Prime Continuim integration, persistent sessions, resume, live streaming,
@@ -218,7 +241,8 @@ ruff check .
 ```
 
 CI runs the suite natively on `windows-latest` and `macos-latest` (Python 3.11
-and 3.12) using only a deterministic fake Prime executable.
+and 3.12), runs Plugin Doctor, and clean-installs the built wheel using only a
+deterministic fake Prime executable.
 
 ## Security warning
 
