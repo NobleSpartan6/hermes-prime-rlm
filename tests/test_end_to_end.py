@@ -155,7 +155,17 @@ def test_successful_flow_verified(fake_ctx, clean_repo, tmp_path, passing_check)
     assert identity and len(identity["argv_sha256"]) == 64
     assert len(identity["executable_sha256"]) == 64
     assert identity["executable_name"]
-    assert len(identity["script_sha256"]) == 64
+    command_prefix = fake_ctx.get_config("prime_agent_command")
+    if len(command_prefix) == 1:
+        # POSIX executes the launcher script directly as argv[0], so its bytes
+        # are already bound by executable_sha256. There is no separate
+        # file-valued script argument to hash.
+        assert identity["script_name"] == ""
+        assert identity["script_sha256"] == ""
+    else:
+        # Windows runs python.exe with fake_prime_agent.py as argv[1].
+        assert identity["script_name"] == "fake_prime_agent.py"
+        assert len(identity["script_sha256"]) == 64
 
     # v0.1.1: proposal digest (pre-check) present and matches post-check when
     # the check did not mutate anything.
