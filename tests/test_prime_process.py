@@ -142,18 +142,67 @@ def test_runtime_timeout_becomes_uncertain(fake_ctx, clean_repo):
     assert observation.exit_code is None
 
 
-def test_timeout_runs_no_host_checks(fake_ctx, clean_repo):
-    """Structural guarantee: the handler maps timeout → UNCERTAIN before checks."""
-    import inspect
+def test_timeout_runs_no_host_checks(fake_ctx, clean_repo, monkeypatch):
+    """A timed-out RPC observation returns UNCERTAIN before any host check."""
+    import json
 
     from conftest import tools
+    from prime_rlm_pkg.models import PrimeObservation
 
-    source = inspect.getsource(tools._execute_admitted_run)
-    timeout_branch = source.split("observation.timed_out")[1].split(
-        "if observation.exit_code"
-    )[0]
-    assert "_finish_uncertain" in timeout_branch
-    assert "run_all_checks" not in timeout_branch
+    kernel = fake_ctx.state.data_dir / "kernel-python.exe"
+    kernel.write_bytes(b"")
+    fake_ctx._settings["prime_agent_kernel_python"] = str(kernel.resolve())
+    captured_env = {}
+
+    def timed_out_rpc(_command_prefix, layout, _timeout, *, env=None):
+        captured_env.update(env or {})
+        Path(layout.prime_events).touch()
+        Path(layout.prime_stderr).touch()
+        return (
+            PrimeObservation(
+                launched=True,
+                exit_code=None,
+                session_id="timed-out-rpc",
+                saw_agent_start=True,
+                saw_agent_end=False,
+                event_count=1,
+                timed_out=True,
+                stream_valid=False,
+                error_code="RPC_TIMEOUT",
+            ),
+            ["prime-agent", "--mode", "rpc"],
+        )
+
+    def forbidden_checks(*_args, **_kwargs):
+        raise AssertionError("host checks must not run after an RPC timeout")
+
+    monkeypatch.setattr(tools, "run_prime_rpc", timed_out_rpc)
+    monkeypatch.setattr(tools, "run_all_checks", forbidden_checks)
+    result = json.loads(
+        tools.handle_prime_agent(
+            {
+                "action": "run",
+                "goal": "time out deterministically",
+                "repository_path": str(clean_repo),
+                "checks": [
+                    {
+                        "name": "forbidden",
+                        "argv": [sys.executable, "-c", "raise SystemExit(0)"],
+                        "timeout_seconds": 60,
+                    }
+                ],
+                "runtime_timeout_seconds": 30,
+            },
+            _ctx=fake_ctx,
+        )
+    )
+
+    assert result["status"] == "UNCERTAIN"
+    assert result["error_code"] == "RPC_TIMEOUT"
+    assert result["checks"] == []
+    assert result["automatic_retry_allowed"] is False
+    assert captured_env["PRIME_AGENT_KERNEL_PYTHON"] == str(kernel.resolve())
+    assert "OPENAI_API_KEY" not in captured_env
 
 
 def test_timeout_does_not_trigger_retry(fake_ctx, clean_repo):

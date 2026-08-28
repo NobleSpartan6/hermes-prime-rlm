@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Hermes Prime RLM authority boundary</title>
+  <desc id="desc">Hermes owns goals, approval, host checks and acceptance. Prime owns bounded RLM computation inside a detached candidate. Evidence returns to Hermes. Nothing is applied, committed, pushed, or retried automatically.</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1e293b" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0 0L10 4L0 8Z" fill="#94a3b8"/>
+    </marker>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .title{font:700 25px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#f8fafc}
+      .subtitle{font:400 13px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#94a3b8}
+      .heading{font:700 16px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#f8fafc}
+      .body{font:400 12px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#cbd5e1}
+      .small{font:400 10px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#94a3b8}
+      .label{font:600 10px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#e2e8f0}
+    </style>
+  </defs>
+
+  <rect width="1200" height="650" rx="20" fill="#020617"/>
+  <rect width="1200" height="650" rx="20" fill="url(#grid)" opacity="0.75"/>
+
+  <circle cx="44" cy="43" r="6" fill="#22d3ee" filter="url(#glow)"/>
+  <text x="62" y="51" class="title">Hermes Prime RLM</text>
+  <text x="62" y="74" class="subtitle">bounded computation; host-observed acceptance</text>
+  <rect x="895" y="30" width="265" height="48" rx="9" fill="#0f172a" stroke="#334155"/>
+  <text x="1027" y="50" class="label" text-anchor="middle">SAME OS USER · NOT A SANDBOX</text>
+  <text x="1027" y="67" class="small" text-anchor="middle">worktree = edit isolation only</text>
+
+  <!-- arrows behind boxes -->
+  <path d="M360 276H447" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="403" y="263" class="small" text-anchor="middle">goal + checks</text>
+  <text x="403" y="293" class="small" text-anchor="middle">RPC stdin</text>
+  <path d="M760 276H845" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="802" y="263" class="small" text-anchor="middle">candidate</text>
+  <text x="802" y="293" class="small" text-anchor="middle">events + diff</text>
+  <path d="M887 438C760 528 440 528 313 438" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="600" y="531" class="small" text-anchor="middle">host-observed checks + self-hashed receipt return authority to Hermes</text>
+
+  <!-- Hermes -->
+  <rect x="40" y="120" width="320" height="340" rx="16" fill="#0f172a" stroke="#22d3ee" stroke-width="2"/>
+  <rect x="40" y="120" width="320" height="52" rx="16" fill="#083344" opacity="0.85"/>
+  <text x="66" y="152" class="heading">HERMES · CONTROL PLANE</text>
+  <text x="66" y="202" class="body">01  owns the conversation and goal</text>
+  <text x="66" y="236" class="body">02  approves one bounded invocation</text>
+  <text x="66" y="270" class="body">03  freezes base commit + check argv</text>
+  <text x="66" y="304" class="body">04  admits exact Prime/model/kernel</text>
+  <text x="66" y="338" class="body">05  decides accept or discard</text>
+  <rect x="65" y="374" width="270" height="56" rx="9" fill="#020617" stroke="#164e63"/>
+  <text x="200" y="397" class="label" text-anchor="middle">ONLY MODEL-FACING TOOL</text>
+  <text x="200" y="418" class="body" text-anchor="middle">prime_agent(action="run")</text>
+
+  <!-- Prime -->
+  <rect x="447" y="120" width="313" height="340" rx="16" fill="#0f172a" stroke="#a78bfa" stroke-width="2"/>
+  <rect x="447" y="120" width="313" height="52" rx="16" fill="#4c1d95" opacity="0.58"/>
+  <text x="473" y="152" class="heading">PRIME · COMPUTE PLANE</text>
+  <text x="473" y="202" class="body">01  one ephemeral v0.8.1 RPC process</text>
+  <text x="473" y="236" class="body">02  detached candidate worktree cwd</text>
+  <text x="473" y="270" class="body">03  IPython / RLM programmatic search</text>
+  <text x="473" y="304" class="body">04  recursive workers, bounded/accounted</text>
+  <text x="473" y="338" class="body">05  native provider auth + model call</text>
+  <rect x="472" y="374" width="263" height="56" rx="9" fill="#020617" stroke="#6d28d9"/>
+  <text x="604" y="397" class="label" text-anchor="middle">NO ACCEPTANCE AUTHORITY</text>
+  <text x="604" y="418" class="small" text-anchor="middle">“tests passed” is only model text</text>
+
+  <!-- Evidence -->
+  <rect x="845" y="120" width="315" height="340" rx="16" fill="#0f172a" stroke="#34d399" stroke-width="2"/>
+  <rect x="845" y="120" width="315" height="52" rx="16" fill="#064e3b" opacity="0.7"/>
+  <text x="871" y="152" class="heading">HOST · EVIDENCE PLANE</text>
+  <text x="871" y="202" class="body">01  validates strict JSONL lifecycle</text>
+  <text x="871" y="236" class="body">02  records tracked + untracked diff</text>
+  <text x="871" y="270" class="body">03  runs exact checks in candidate</text>
+  <text x="871" y="304" class="body">04  observes exit codes and digests</text>
+  <text x="871" y="338" class="body">05  writes canonical review receipt</text>
+  <rect x="870" y="374" width="265" height="56" rx="9" fill="#020617" stroke="#047857"/>
+  <text x="1002" y="397" class="label" text-anchor="middle">VERIFIED ≠ ACCEPTED</text>
+  <text x="1002" y="418" class="small" text-anchor="middle">recorded checks exited zero</text>
+
+  <rect x="40" y="566" width="1120" height="52" rx="12" fill="#2a0d18" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="600" y="588" text-anchor="middle" class="label" fill="#fecdd3">HARD STOP</text>
+  <text x="600" y="607" text-anchor="middle" class="body">NO APPLY  ·  NO COMMIT  ·  NO MERGE  ·  NO PUSH  ·  NO AUTOMATIC RETRY  ·  CANDIDATE PRESERVED</text>
+</svg>

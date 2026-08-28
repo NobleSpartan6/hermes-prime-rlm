@@ -59,13 +59,15 @@ schemas = _load("schemas")
 validation = _load("validation")
 workspace = _load("workspace")
 platform_runtime = _load("platform_runtime")
-prime_protocol = _load("prime_protocol")
 prime_process = _load("prime_process")
+prime_protocol = _load("prime_protocol")
+prime_rpc = _load("prime_rpc")
 verification = _load("verification")
 evidence = _load("evidence")
 receipt_mod = _load("receipt")
 receipt = receipt_mod  # alias matching test-module import names
 tools = _load("tools")
+setup_gate = _load("setup_gate")
 
 
 class FakeState:
@@ -79,10 +81,17 @@ class FakeContext:
     def __init__(self, data_root: Path, settings: dict | None = None) -> None:
         self.state = FakeState(data_root)
         self._settings = dict(settings or {})
+        self.set_config_calls: list[tuple[str, object]] = []
         self.registered_tools: list[dict] = []
+        self.registered_cli_commands: list[dict] = []
+        self.registered_commands: list[dict] = []
 
     def get_config(self, key, default=None):
         return self._settings.get(key, default)
+
+    def set_config(self, key, value):
+        self.set_config_calls.append((key, value))
+        self._settings[key] = value
 
     def register_tool(self, *, name, toolset, schema, handler, description="", **_extra):
         self.registered_tools.append(
@@ -92,6 +101,29 @@ class FakeContext:
                 "schema": schema,
                 "handler": handler,
                 "description": description,
+            }
+        )
+
+    def register_cli_command(
+        self, *, name, help, setup_fn, handler_fn=None, description=""
+    ):
+        self.registered_cli_commands.append(
+            {
+                "name": name,
+                "help": help,
+                "setup_fn": setup_fn,
+                "handler_fn": handler_fn,
+                "description": description,
+            }
+        )
+
+    def register_command(self, name, handler, description="", args_hint=""):
+        self.registered_commands.append(
+            {
+                "name": name,
+                "handler": handler,
+                "description": description,
+                "args_hint": args_hint,
             }
         )
 

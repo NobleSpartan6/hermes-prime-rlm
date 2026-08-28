@@ -7,8 +7,39 @@ that runs a bounded coding goal through **Prime Agent** (a Recursive Language
 Model agent) inside a detached Git worktree, then records **host-observed
 checks** in an unsigned review receipt.
 
+> **Hermes owns the goal, approvals, candidate, and verifier. Prime owns the
+> bounded RPC computation.** v0.2 is deliberately one-shot; it does not make
+> Prime the active Hermes agent or expose persistent sessions.
+
 > Hermes Prime RLM is an independent community integration. It is not an
 > official Nous Research or Prime Intellect product.
+
+![Hermes Prime RLM authority boundary](docs/architecture.svg)
+
+## One real Codex run — proof before pitch
+
+On 2026-08-28, one non-retried canary ran through the actual
+`prime_agent(action="run")` surface using Prime Agent v0.8.1 and the user's
+Prime-native ChatGPT subscription:
+
+```text
+provider/model       openai-codex / gpt-5.6-sol
+candidate            detached Git worktree
+Prime lifecycle      agent_start → 1,472 events → agent_end → exit 0
+Hermes-hosted check  import-check: passed, exit 0, 94 ms
+result               VERIFIED
+automatic retry      false
+active checkout      unchanged
+receipt SHA-256      060cf00edf63cafb4b233b7120e8f9901118562b32c919fccfd46ca4f6739380
+```
+
+Prime added `farewell(name)`, documented it, and wrote tests in the detached
+candidate. Hermes independently ran the recorded import check; Prime's own
+claim that its tests passed had no authority. Nothing was applied, committed,
+or pushed. The receipt still says `UNSIGNED`, `UNQUIESCED`, and
+`acceptance_status: PENDING`—`VERIFIED` means only that the recorded host check
+exited zero. See [`docs/codex-canary.md`](docs/codex-canary.md) for the exact
+evidence projection and limitations.
 
 ## The problem
 
@@ -56,6 +87,7 @@ and checked in (~5 MB). Point the tool at it:
 
 ```json
 {
+  "action": "run",
   "goal": "error_rate() in app.py fails run_tests.py. events.log is ~1.5M tokens — do NOT read it into memory or print it; stream it programmatically. Make run_tests.py print PASS.",
   "repository_path": "<repo>/examples/payments-api",
   "checks": [
@@ -89,14 +121,19 @@ reasoning, added unit tests — and never once loaded the full file into memory.
 
 ## What the plugin does
 
-`prime_rlm_run` takes a goal, a clean Git repository, and explicit verification
+`prime_agent(action="run")` takes a goal, a clean Git repository, and explicit verification
 commands, then:
 
 1. Freezes the repository's exact current commit.
 2. Creates a **detached candidate worktree** from that commit.
-3. Runs Prime Agent (JSON event-stream mode) inside the candidate only.
-4. Validates Prime's protocol (schema 3, one `agent_start`,
-   one `agent_end`).
+3. Starts one ephemeral Prime Agent v0.8.1 RPC session with both native process
+   `cwd` and fixed `--cwd` bound to the candidate. The bounded task envelope is
+   delivered through RPC stdin and never appears in process argv.
+4. Stages and awaits a correlated state handshake, disabled Prime auto-retry,
+   available active model, and accepted prompt before work can proceed; then
+   requires the first tool to successfully execute an exact IPython `import rlm`
+   health probe, one `agent_start`, one `agent_end`, session statistics,
+   and a final non-streaming state.
 5. Runs the recorded verification commands inside the candidate and observes
    their exit status.
 6. Writes a canonically encoded, self-hashed, unsigned receipt containing
@@ -117,8 +154,9 @@ Responsibilities are separated in code, but not by OS privilege:
 - **Hermes** owns the conversation, the decision to invoke the tool, and the
   final accept/discard decision.
 - **Prime Agent** owns its RLM trajectory, IPython environment, recursive
-  subagents, and its own model/provider configuration (the plugin never selects
-  a model).
+  subagents, and native provider authentication. An operator may freeze an
+  exact available model in the digest-bound runtime plan; the plugin never
+  auto-routes or extracts provider credentials.
 - **The plugin** performs admission, worktree creation, protocol validation,
   host-observed checks, evidence collection, and receipt writing.
 
@@ -149,14 +187,22 @@ run explicitly if you choose to.
 
 ## Installation
 
-Requires Python ≥ 3.11, Git, and **Prime Agent ≥ 0.8.0, < 0.9.0** (probed at
-admission; anything else is refused).
+Requires Python ≥ 3.11, Git, and **Prime Agent v0.8.1 exactly**. The installed
+version is probed before candidate creation; anything else is refused because
+the RPC event and command contract is pinned to that release.
+
+Install the standalone plugin through Hermes (disabled until you consent to
+enable it):
+
+```bash
+hermes plugins install NobleSpartan6/hermes-prime-rlm
+```
 
 Install a release wheel into the same Python environment that runs Hermes; the
 `hermes_agent.plugins` entry point is discovered on the next startup:
 
 ```bash
-python -m pip install hermes_prime_rlm-0.1.1-py3-none-any.whl
+python -m pip install hermes_prime_rlm-0.2.0-py3-none-any.whl
 ```
 
 For source development, clone this repository and link it into your Hermes user
@@ -174,30 +220,48 @@ hermes plugins list
 ```
 
 Start a **new** Hermes session (tool schemas load at session start) and ask it
-to fix a repository — Hermes will call `prime_rlm_run` natively.
+to fix a repository — Hermes will call `prime_agent(action="run")` natively.
 
-Configure the Prime command (operator-owned, never model-facing):
+Run the operator-only readiness check and zero-YAML setup transaction:
 
-```yaml
-plugins:
-  entries:
-    prime-rlm:
-      settings:
-        prime_agent_command: ["prime-agent"]
-        # or a bash shim: ["C:\Program Files\Git\bin\bash.exe", "C:\path\to\prime-agent.sh"]
-        env:
-          PRIME_AGENT_KERNEL_PYTHON: "<path-to-prime-kernel-python>"
+```bash
+hermes prime doctor --json       # strictly read-only
+hermes prime setup               # default-negative, digest-bound config repair
+hermes prime setup --check       # read-only alias
 ```
+
+`hermes prime setup` currently adopts an existing exact Prime v0.8.1 runtime,
+removes a stale operator `--model` override only after proving Prime's native
+selection, discovers and proves a profile-scoped kernel interpreter, and
+atomically writes one `prime_runtime` object through `ctx.set_config`. It never
+edits YAML directly. `hermes prime doctor --fix` delegates to the same engine;
+`/prime-setup` remains read-only and points operators to the local terminal.
+
+The packaged `runtime_lock.json` pins the four Prime v0.8.1 release tarballs,
+but a dependency-complete Node/uv/Bash/npm closure is not yet shipped. On a
+machine without an adoptable exact runtime, setup fails closed rather than
+performing a mutable or global install. Do not describe the current runtime as
+`MANAGED_LOCKED` until that closure and cross-platform acquisition tests exist.
+
+Prime uses its own native credential store. The plugin does not copy Hermes
+provider credentials into Prime, and default RPC launches do not inherit
+ambient provider variables such as `OPENAI_API_KEY`, `PRIME_API_KEY`, or AWS
+secret keys. Non-secret OS/runtime paths are allowlisted so Prime can find its
+native config and an explicitly configured `PRIME_AGENT_KERNEL_PYTHON`.
+On Windows, setup stores the absolute kernel interpreter in the non-secret
+`prime_runtime.kernel_python` field because Prime v0.8.1's automatic bootstrap
+uses the POSIX `bin/python` path.
 
 ## Platform support
 
 - **Windows 10/11 native** — first-class. `.cmd`/`.bat` shims go through an
   injection-hardened cmd.exe adapter (space-bearing paths via 8.3 short names;
   cmd metacharacters refused before spawn). Tree termination via
-  `taskkill /PID <pid> /T /F`.
+  `taskkill /PID <pid> /T /F`. Plugin-owned processes use `CREATE_NO_WINDOW`;
+  the showcase recorder opens a console only with explicit `--visible-console`.
 - **macOS native** — `start_new_session=True`; timeout escalates
   SIGTERM→SIGKILL against the owned process group.
-- Linux may work but is not an acceptance target for v0.1.
+- **Linux native** — required CI acceptance target alongside Windows and macOS.
 
 ## Run layout & receipt
 
@@ -207,7 +271,7 @@ plugins:
 ├── prime-task.md         # goal + fixed host rules (goal never on a CLI)
 ├── candidate/            # detached worktree — preserved after every outcome
 ├── prime-events.jsonl    # bounded Prime stdout used for protocol validation
-├── prime-stderr.log
+├── prime-stderr.log     # empty sentinel; RPC stderr is suppressed to DEVNULL
 ├── tracked.patch         # git diff --binary --full-index vs base
 ├── status.txt
 ├── checks/<name>/stdout.log, stderr.log
@@ -223,14 +287,31 @@ git -C <source-repo> worktree remove <candidate-path>   # manual cleanup only
 
 Nothing is removed automatically.
 
-Prime runtime logs, the version probe, Git status output, and tracked patches
-all use bounded concurrent drains. Candidate-tree file content is hashed as a
-stream rather than accumulated in memory. Bound overruns fail closed.
+Setup transactions are separate from candidate runs:
 
-## Non-goals (v0.1)
+```text
+<plugin-data>/setup-transactions/<transaction-id>/
+├── journal.json
+└── receipt.json
+```
 
-Prime Continuim integration, persistent sessions, resume, live streaming,
-desktop/dashboard UI, MCP, remote hosts, model selection, retries,
+The self-hashed setup receipt binds the plan digest, effective command digest,
+zero-model accounting, and the L0–L3 state-ownership manifest. `READY` means
+local no-model admission passed; it does not mean provider inference or release
+readiness has passed. `NOT_READY`, `UNCERTAIN`, and `UNCERTAIN_SETUP` remain
+distinct machine states, all with automatic retry disabled.
+
+Prime RPC stdout, the version probe, Git status output, and tracked patches use
+bounded drains. RPC stderr is suppressed rather than piped because descendants
+may inherit stderr and hold a reader indefinitely; structured RPC failures stay
+on stdout. Candidate-tree content is hashed as a stream. Bound overruns fail
+closed.
+
+## Non-goals (bounded v0.2 RPC tracer bullet)
+
+Prime Continuim integration, persistent sessions, daemon adoption, resume,
+refinement, auto-routing, desktop/dashboard UI, MCP, remote hosts, automatic
+model selection/provider routing, retries,
 auto-apply/commit/push, submodules, Docker, WSL.
 
 ## Tests
@@ -240,8 +321,8 @@ python -m pytest -q          # deterministic; never calls a live model
 ruff check .
 ```
 
-CI runs the suite natively on `windows-latest` and `macos-latest` (Python 3.11
-and 3.12), runs Plugin Doctor, and clean-installs the built wheel using only a
+CI runs the suite natively on `windows-latest`, `macos-latest`, and
+`ubuntu-latest` (Python 3.11 and 3.12), runs Plugin Doctor, and clean-installs the built wheel using only a
 deterministic fake Prime executable.
 
 ## Security warning
@@ -258,10 +339,13 @@ Do not use the plugin on repositories containing secrets or confidential
 material unless the configured Prime Agent model and provider are approved for
 that data.
 
+“Use the same provider” means compatible provider/model identity plus Prime's
+own login state. It does not mean extracting or copying a Hermes credential.
+
 ## Troubleshooting
 
-- **Version mismatch** — `UNSUPPORTED_PRIME_VERSION`: your prime-agent is
-  outside `>=0.8.0,<0.9.0`; `UNPARSEABLE_PRIME_VERSION`: `--version` output
+- **Version mismatch** — `UNSUPPORTED_PRIME_VERSION`: your prime-agent is not
+  exactly `0.8.1`; `UNPARSEABLE_PRIME_VERSION`: `--version` output
   couldn't be parsed (check wrappers printing extra text).
 - **PATH problems** — the first command token must resolve absolutely or via
   `shutil.which`; check with `where prime-agent` / `which prime-agent`.

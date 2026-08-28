@@ -65,6 +65,7 @@ class PrimeObservation:
     event_count: int
     final_text: str = ""
     timed_out: bool = False
+    host_terminated: bool = False
     stream_valid: bool = False
     error_code: str | None = None
 

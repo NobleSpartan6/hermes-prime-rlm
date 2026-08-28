@@ -1,14 +1,15 @@
 #!/usr/bin/env python
 """Deterministic fake Prime Agent for the automated suite. NEVER calls a model.
 
-Behavior is selected entirely through the ``FAKE_PRIME_SCENARIO`` environment
-variable (default ``success_tracked_change``). Emulates the subset of the
-documented 0.8.x CLI the plugin uses:
+Behavior is selected through the test-only ``--fake-scenario`` command-prefix
+argument or, for direct process tests, ``FAKE_PRIME_SCENARIO``. It emulates the
+pinned Prime v0.8.1 CLI subset used by the plugin:
 
-    fake --version                       -> prints "prime-agent 0.8.2"
+    fake --version                       -> prints "prime-agent 0.8.1"
+    fake --mode rpc --no-session --cwd <dir>
     fake --mode json --no-session --cwd <dir> <taskfile> -- <instruction>
 
-The fake writes a schema-3 JSON event stream to stdout describing its work,
+The fake writes deterministic JSONL RPC responses/events to stdout,
 performs deterministic candidate edits per scenario, and exits with a
 scenario-controlled code. Timeouts are produced by sleeping past the runtime
 budget; partial-edit-then-timeout scenarios edit BEFORE sleeping.
@@ -19,11 +20,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
-FAKE_VERSION = "0.8.2"
+FAKE_VERSION = "0.8.1"
 
 SCENARIOS = [
     "success_no_changes",
@@ -50,6 +53,14 @@ SCENARIOS = [
     "oversized_file",
     "partial_change_then_timeout",
     "stderr_noise",
+    "rpc_success_fragmented",
+    "rpc_malformed_json",
+    "rpc_premature_eof",
+    "rpc_oversized_record",
+    "rpc_prompt_rejected",
+    "rpc_requires_staged_admission",
+    "rpc_readiness_extra_event",
+    "rpc_success_stderr_descendant",
 ]
 
 
@@ -265,16 +276,247 @@ def run_json_mode(scenario: str) -> int:
     return exit_code
 
 
+_RPC_WRITE_LOCK = threading.Lock()
+
+
+def _rpc_write(value: dict, *, fragmented: bool) -> None:
+    payload = json.dumps(value, ensure_ascii=False).encode("utf-8") + b"\n"
+    with _RPC_WRITE_LOCK:
+        if not fragmented:
+            sys.stdout.buffer.write(payload)
+            sys.stdout.buffer.flush()
+            return
+        index = 0
+        step = 1
+        while index < len(payload):
+            sys.stdout.buffer.write(payload[index : index + step])
+            sys.stdout.buffer.flush()
+            index += step
+            step = 1 if step == 7 else step + 1
+
+
+def run_rpc_mode(scenario: str) -> int:
+    argv = sys.argv[1:]
+    try:
+        cwd = argv[argv.index("--cwd") + 1]
+    except (ValueError, IndexError):
+        print("--cwd required", file=sys.stderr)
+        return 3
+    candidate = Path(cwd)
+    model = {"provider": "openrouter", "id": "test/model"}
+    fragmented = scenario == "rpc_success_fragmented"
+    retry_disabled = threading.Event()
+    for raw_line in sys.stdin.buffer:
+        command = json.loads(raw_line.decode("utf-8"))
+        command_id = command.get("id")
+        command_type = command.get("type")
+        if command_type == "get_state":
+            _rpc_write(
+                {
+                    "id": command_id,
+                    "type": "response",
+                    "command": "get_state",
+                    "success": True,
+                    "data": {
+                        "sessionId": "fake-rpc-session",
+                        "isStreaming": False,
+                        "model": model,
+                    },
+                },
+                fragmented=fragmented,
+            )
+        elif command_type == "set_auto_retry":
+            if scenario == "rpc_requires_staged_admission":
+                response_id = command_id
+                enabled = command.get("enabled")
+
+                def delayed_retry_response(
+                    response_id=response_id,
+                    enabled=enabled,
+                ) -> None:
+                    time.sleep(0.15)
+                    retry_disabled.set()
+                    _rpc_write(
+                        {
+                            "id": response_id,
+                            "type": "response",
+                            "command": "set_auto_retry",
+                            "success": enabled is False,
+                        },
+                        fragmented=False,
+                    )
+
+                threading.Thread(target=delayed_retry_response, daemon=True).start()
+                continue
+            _rpc_write(
+                {
+                    "id": command_id,
+                    "type": "response",
+                    "command": "set_auto_retry",
+                    "success": command.get("enabled") is False,
+                },
+                fragmented=fragmented,
+            )
+        elif command_type == "get_available_models":
+            if scenario == "rpc_requires_staged_admission" and not retry_disabled.is_set():
+                _rpc_write(
+                    {
+                        "id": command_id,
+                        "type": "response",
+                        "command": "get_available_models",
+                        "success": False,
+                        "error": "retry disable response was not awaited",
+                    },
+                    fragmented=False,
+                )
+                continue
+            _rpc_write(
+                {
+                    "id": command_id,
+                    "type": "response",
+                    "command": "get_available_models",
+                    "success": True,
+                    "data": {"models": [model]},
+                },
+                fragmented=fragmented,
+            )
+            if scenario == "rpc_readiness_extra_event":
+                _rpc_write({"type": "agent_start"}, fragmented=False)
+        elif command_type == "prompt":
+            prompt_log = os.environ.get("FAKE_RPC_PROMPT_LOG")
+            if prompt_log:
+                Path(prompt_log).write_text(str(command.get("message", "")), encoding="utf-8")
+            accepted = scenario != "rpc_prompt_rejected"
+            _rpc_write(
+                {
+                    "id": command_id,
+                    "type": "response",
+                    "command": "prompt",
+                    "success": accepted,
+                    **({} if accepted else {"error": "rejected by fake"}),
+                },
+                fragmented=fragmented,
+            )
+            if not accepted:
+                return 0
+            if scenario in {"rpc_malformed_json", "malformed_json"}:
+                sys.stdout.buffer.write(b"{not-json}\n")
+                sys.stdout.buffer.flush()
+                return 0
+            if scenario == "rpc_premature_eof":
+                sys.stdout.buffer.write(b'{"type":"agent_start"')
+                sys.stdout.buffer.flush()
+                return 0
+            if scenario == "rpc_oversized_record":
+                sys.stdout.buffer.write(
+                    b'{"type":"message_update","padding":"'
+                    + b"x" * (5 * 1024 * 1024)
+                    + b'"}\n'
+                )
+                sys.stdout.buffer.flush()
+                return 0
+            if scenario == "nonzero_before_terminal":
+                return 7
+            if scenario == "partial_change_then_timeout":
+                apply_changes(candidate, scenario)
+                time.sleep(int(os.environ.get("FAKE_PRIME_SLEEP_SECONDS", "600")))
+                return 0
+            if scenario == "rpc_success_fragmented":
+                readme = candidate / "README.md"
+                readme.write_text(
+                    readme.read_text(encoding="utf-8") + "\nRPC edit by fake prime.\n",
+                    encoding="utf-8",
+                )
+            elif scenario == "rpc_success_stderr_descendant":
+                subprocess.Popen(  # noqa: S603 - deterministic test child
+                    [sys.executable, "-c", "import time; time.sleep(4)"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=None,
+                )
+            else:
+                apply_changes(candidate, scenario)
+            final_text = (
+                "All tests passed. Verification complete. Everything works."
+                if scenario == "success_claims_tests_passed"
+                else "RPC candidate complete"
+            )
+            for event in [
+                {"type": "agent_start"},
+                {
+                    "type": "tool_execution_start",
+                    "toolCallId": "kernel-health-1",
+                    "toolName": "ipython",
+                    "args": {
+                        "code": "import rlm\nassert callable(rlm)\n'__HERMES_PRIME_KERNEL_HEALTH_V1__'"
+                    },
+                },
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "kernel-health-1",
+                    "toolName": "ipython",
+                    "result": "__HERMES_PRIME_KERNEL_HEALTH_V1__",
+                    "isError": False,
+                },
+                {
+                    "type": "message_end",
+                    "message": {
+                        "role": "assistant",
+                        "content": final_text,
+                    },
+                },
+                {
+                    "type": "agent_end",
+                    "messages": [
+                        {"role": "assistant", "content": final_text}
+                    ],
+                },
+            ]:
+                _rpc_write(event, fragmented=fragmented)
+        elif command_type == "get_session_stats":
+            _rpc_write(
+                {
+                    "id": command_id,
+                    "type": "response",
+                    "command": "get_session_stats",
+                    "success": True,
+                    "data": {"tokens": {"total": 123}, "cost": 0.01},
+                },
+                fragmented=fragmented,
+            )
+        else:
+            _rpc_write(
+                {
+                    "id": command_id,
+                    "type": "response",
+                    "command": command_type,
+                    "success": False,
+                    "error": "unsupported fake RPC command",
+                },
+                fragmented=fragmented,
+            )
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if "--version" in argv:
         print(f"prime-agent {FAKE_VERSION}")
         return 0
 
-    scenario = os.environ.get("FAKE_PRIME_SCENARIO", "success_tracked_change")
+    if "--fake-scenario" in argv:
+        try:
+            scenario = argv[argv.index("--fake-scenario") + 1]
+        except IndexError:
+            print("--fake-scenario requires a value", file=sys.stderr)
+            return 64
+    else:
+        scenario = os.environ.get("FAKE_PRIME_SCENARIO", "success_tracked_change")
     if scenario not in SCENARIOS:
         print(f"unknown FAKE_PRIME_SCENARIO: {scenario}", file=sys.stderr)
         return 64
+
+    if "--mode" in argv and "rpc" in argv:
+        return run_rpc_mode(scenario)
 
     if "--mode" in argv and "json" in argv:
         return run_json_mode(scenario)

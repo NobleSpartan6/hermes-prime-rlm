@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
         python-version: ["3.11", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
@@ -85,10 +85,10 @@ jobs:
           mkdir -p "$HERMES_HOME"
           printf '_config_version: 39\nplugins:\n  enabled: [prime-rlm]\n  disabled: []\n  entries:\n    prime-rlm:\n      allow_tool_override: false\n' > "$HERMES_HOME/config.yaml"
           cd "$RUNNER_TEMP"
-          python -c 'from hermes_cli.plugins import PluginManager; m=PluginManager(); m.discover_and_load(); p=m._plugins["prime-rlm"]; assert p.manifest.source=="entrypoint" and p.manifest.version=="0.1.1"; assert "prime_rlm_run" in m._plugin_tool_names; print("installed-entrypoint-discovery PASS"); m.unload()'
+          python -c 'from hermes_cli.plugins import PluginManager; m=PluginManager(); m.discover_and_load(); p=m._plugins["prime-rlm"]; assert p.manifest.source=="entrypoint" and p.manifest.version=="0.2.0"; assert "prime_agent" in m._plugin_tool_names; assert "prime" in m._cli_commands; assert "prime-setup" in m._plugin_commands; assert p.commands_registered==["prime-setup"]; print("installed-entrypoint-discovery PASS"); m.unload()'
           python "$GITHUB_WORKSPACE/scripts/artifact_smoke.py"
       - name: Checksums
-        run: sha256sum dist/* > SHA256SUMS
+        run: (cd dist && sha256sum * > ../SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: hermes-prime-rlm-${{ github.ref_name }}

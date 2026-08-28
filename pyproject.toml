@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-prime-rlm"
-version = "0.1.1"
+version = "0.2.0"
 description = "Hermes Agent plugin: generate a detached candidate worktree with Prime Agent and record host-observed checks in a review receipt."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,7 @@ classifiers = [
   "Intended Audience :: Developers",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Topic :: Software Development :: Version Control :: Git",
@@ -34,7 +35,7 @@ packages = ["hermes_prime_rlm"]
 package-dir = { hermes_prime_rlm = "." }
 
 [tool.setuptools.package-data]
-hermes_prime_rlm = ["plugin.yaml"]
+hermes_prime_rlm = ["plugin.yaml", "runtime_lock.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

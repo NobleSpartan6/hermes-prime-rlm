@@ -221,14 +221,16 @@ def resolve_base_commit(repository_path: str) -> str:
 
 def probe_prime_version(
     command_prefix: list[str],
-) -> tuple[int, int, int, str | None]:
+) -> tuple[tuple[int, int, int], str | None]:
     """Run ``<prefix> --version`` with a bounded timeout and range-check it.
 
-    Returns ``(major, minor, patch, version_output)``. The probed output text
+    Returns ``((major, minor, patch), version_output)``. The probed output text
     travels to the caller as a return value — never through module-global
     state — so concurrent invocations cannot overwrite each other's evidence.
     """
     import shutil
+
+    from .prime_rpc_process import build_rpc_environment
 
     resolved_first = _resolve_executable_token(command_prefix[0], shutil.which)
     if resolved_first is None:
@@ -245,6 +247,7 @@ def probe_prime_version(
             cwd=os.getcwd(),
             stdout_path=stdout_path,
             stderr_path=stderr_path,
+            env=build_rpc_environment(dict(os.environ)),
             stdout_max_bytes=PRIME_VERSION_MAX_BYTES,
             stderr_max_bytes=PRIME_VERSION_MAX_BYTES,
         )

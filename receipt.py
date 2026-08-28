@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 from .models import CandidateStability, ChangedPaths, CheckResult, PrimeObservation, Status
 
-PLUGIN_VERSION = "0.1.1"
+PLUGIN_VERSION = "0.2.0"
 RECEIPT_SCHEMA_VERSION = 1
 
 LIMITATIONS = [
@@ -133,6 +133,7 @@ def build_receipt(
             "saw_agent_start": observation.saw_agent_start,
             "saw_agent_end": observation.saw_agent_end,
             "event_count": observation.event_count,
+            "host_terminated": observation.host_terminated,
             "final_text": observation.final_text,
         },
         "checks": [check.to_dict() for check in checks],

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "prime_version": "0.8.1",
+  "prime_commit": "514633727bf26d74f39f3119c2b0e31a5ceb2a9d",
+  "allowed_origins": [
+    "https://github.com"
+  ],
+  "prime_assets": [
+    {
+      "name": "prime-agent-0.8.1.tgz",
+      "url": "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.8.1/prime-agent-0.8.1.tgz",
+      "sha256": "46c24db1782dd31adc35d5c6cbcc75564faba6ced3bf2ccf03d836ee77134475",
+      "size": 9616163
+    },
+    {
+      "name": "prime-agent-ai-0.8.1.tgz",
+      "url": "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.8.1/prime-agent-ai-0.8.1.tgz",
+      "sha256": "f6c3bdb6093bc24a327546fe865ef9a4a172c734fcd4c4093e30c19476f0134d",
+      "size": 552864
+    },
+    {
+      "name": "prime-agent-core-0.8.1.tgz",
+      "url": "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.8.1/prime-agent-core-0.8.1.tgz",
+      "sha256": "0cc3660953545f8ac9a7e704fcb9875f954d58c3085304080ef615c280aa5748",
+      "size": 59520
+    },
+    {
+      "name": "prime-agent-tui-0.8.1.tgz",
+      "url": "https://github.com/PrimeIntellect-ai/prime-agent/releases/download/v0.8.1/prime-agent-tui-0.8.1.tgz",
+      "sha256": "bd07bccee0ca495565b1d62e9411f3fdebe49e3dfa52870564f08af5e61fde15",
+      "size": 427328
+    }
+  ]
+}

@@ -7,7 +7,6 @@ eight. Runs identically on Windows CI and macOS CI.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -15,18 +14,23 @@ import pytest
 from conftest import tools
 
 
-def _invoke(fake_ctx, repo, scenario, checks, timeout=120, extra_env=None):
+def _invoke(fake_ctx, repo, scenario, checks, timeout=120):
     """Run the real handler against the real fake agent with a scenario.
 
     Timeout scenarios keep the fake's default 600s sleep, which exceeds every
     legal runtime budget (>=30s), so the handler's timeout path is exercised
     honestly. The UNCERTAIN e2e test therefore takes ~30s.
     """
-    old = os.environ.get("FAKE_PRIME_SCENARIO")
-    os.environ["FAKE_PRIME_SCENARIO"] = scenario
+    original_command = list(fake_ctx._settings["prime_agent_command"])
+    fake_ctx._settings["prime_agent_command"] = [
+        *original_command,
+        "--fake-scenario",
+        scenario,
+    ]
     try:
-        raw = tools.handle_prime_rlm_run(
+        raw = tools.handle_prime_agent(
             {
+                "action": "run",
                 "goal": "Add a greeting module.",
                 "repository_path": str(repo),
                 "checks": checks,
@@ -36,10 +40,7 @@ def _invoke(fake_ctx, repo, scenario, checks, timeout=120, extra_env=None):
             source="e2e-test",
         )
     finally:
-        if old is None:
-            os.environ.pop("FAKE_PRIME_SCENARIO", None)
-        else:
-            os.environ["FAKE_PRIME_SCENARIO"] = old
+        fake_ctx._settings["prime_agent_command"] = original_command
     return json.loads(raw)
 
 
@@ -333,6 +334,17 @@ def test_malformed_stream_after_zero_exit_is_uncertain(fake_ctx, clean_repo):
     result = _invoke(fake_ctx, clean_repo, "malformed_json", [_passing_check()])
     assert result["status"] == "UNCERTAIN"
     assert result["checks"] == []
+
+
+def test_host_terminated_oversized_rpc_stream_is_uncertain(fake_ctx, clean_repo):
+    result = _invoke(fake_ctx, clean_repo, "rpc_oversized_record", [_passing_check()])
+
+    assert result["status"] == "UNCERTAIN"
+    assert result["error_code"] == "RPC_RECORD_TOO_LARGE"
+    assert result["checks"] == []
+    assert result["automatic_retry_allowed"] is False
+    receipt = json.loads(Path(result["receipt_path"]).read_text(encoding="utf-8"))
+    assert receipt["receipt"]["prime"]["host_terminated"] is True
 
 
 def test_nonzero_exit_is_failed_not_uncertain(fake_ctx, clean_repo):

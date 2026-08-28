@@ -1,4 +1,4 @@
-"""RLM-scale demo: run prime_rlm_run against a 1.5M-token log fixture.
+"""RLM-scale demo: run prime_agent(action="run") on a 1.5M-token fixture.
 
 Loads the plugin exactly as Hermes does and invokes the real handler. The
 goal requires programming against data too large for any context window.
@@ -33,16 +33,10 @@ registered: list[dict] = []
 ctx.register_tool = lambda **kw: registered.append(kw)
 pkg.register(ctx)
 tool = registered[0]
+assert tool["name"] == "prime_agent"
 print(f"[rlm-demo] tool: {tool['name']}")
 
-# env for Prime (kernel python override + provider key)
-_env_path = Path(
-    os.environ.get("HERMES_HOME", Path.home() / "AppData" / "Local" / "hermes")
-) / ".env"
-for _line in _env_path.read_text(encoding="utf-8").splitlines():
-    if _line.strip() and not _line.startswith("#") and "=" in _line:
-        _k, _, _v = _line.partition("=")
-        os.environ.setdefault(_k.strip(), _v.strip())
+# Prime uses its native login store; only a non-secret kernel override is set.
 os.environ.setdefault(
     "PRIME_AGENT_KERNEL_PYTHON",
     str(Path.home() / ".prime" / "agent" / "kernel-venv" / "Scripts" / "python.exe"),
@@ -60,6 +54,7 @@ GOAL = (
 result = json.loads(
     tool["handler"](
         {
+            "action": "run",
             "goal": GOAL,
             "repository_path": str(FIXTURE),
             "checks": [

@@ -159,14 +159,15 @@ def test_runtime_timeout_bounds_accepted():
 # --- prime version gate -------------------------------------------------------
 
 
-@pytest.mark.parametrize("version", ["0.8.0", "0.8.99", "prime-agent 0.8.27"])
-def test_prime_versions_accepted(version):
-    parsed = schemas.check_prime_version_compatible(version)
-    assert parsed[0] == 0 and parsed[1] == 8
+@pytest.mark.parametrize("version", ["0.8.1", "prime-agent 0.8.1", "v0.8.1"])
+def test_exact_prime_version_accepted(version):
+    assert schemas.check_prime_version_compatible(version) == (0, 8, 1)
 
 
-@pytest.mark.parametrize("version", ["0.7.4", "0.9.0", "1.0.0"])
-def test_prime_versions_rejected(version):
+@pytest.mark.parametrize(
+    "version", ["0.7.4", "0.8.0", "0.8.2", "0.8.99", "0.9.0", "1.0.0"]
+)
+def test_other_prime_versions_rejected(version):
     with pytest.raises(schemas.ValidationError) as e:
         schemas.check_prime_version_compatible(version)
     assert e.value.error_code == "UNSUPPORTED_PRIME_VERSION"
@@ -189,6 +190,23 @@ def test_noisy_prime_version_probe_fails_at_output_bound(tmp_path):
     with pytest.raises(schemas.ValidationError) as exc:
         validation.probe_prime_version([sys.executable, str(script)])
     assert exc.value.error_code == "PRIME_VERSION_OUTPUT_LIMIT"
+
+
+def test_prime_version_probe_excludes_ambient_provider_credentials(tmp_path, monkeypatch):
+    script = tmp_path / "version_env_probe.py"
+    script.write_text(
+        "import os\n"
+        "if os.getenv('OPENAI_API_KEY'):\n"
+        "    raise SystemExit(7)\n"
+        "print('prime-agent 0.8.1')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-prime")
+
+    version, text = validation.probe_prime_version([sys.executable, str(script)])
+
+    assert version == (0, 8, 1)
+    assert text == "prime-agent 0.8.1"
 
 
 def test_git_capture_and_file_output_fail_closed_at_bounds(clean_repo, tmp_path):

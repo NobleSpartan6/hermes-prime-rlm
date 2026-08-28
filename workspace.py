@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 
 from .models import RunPaths
-from .schemas import ValidationError
+from .schemas import RPC_KERNEL_HEALTH_CODE, ValidationError
 from .validation import run_git, same_path
 
 
@@ -93,16 +93,21 @@ USER GOAL
 
 HOST RULES
 ==========
-1. Work only inside the current working directory.
-2. Inspect all applicable AGENTS.md and repository instructions before editing.
-3. Implement the smallest complete solution satisfying the user goal.
-4. Add or update tests for changed behavior.
-5. Do not commit, push, modify remotes, remove the worktree, or modify another checkout.
-6. Do not claim that host verification passed. The host will execute the
+1. Before any other tool, execute exactly this code with the ipython tool and
+   stop if it fails:
+
+{kernel_health_code}
+
+2. Work only inside the current working directory.
+3. Inspect all applicable AGENTS.md and repository instructions before editing.
+4. Implement the smallest complete solution satisfying the user goal.
+5. Add or update tests for changed behavior.
+6. Do not commit, push, modify remotes, remove the worktree, or modify another checkout.
+7. Do not claim that host verification passed. The host will execute the
    recorded verification commands after this process exits.
-7. Do not place credentials or private environment values into source files,
+8. Do not place credentials or private environment values into source files,
    logs, tests, or output.
-8. Finish with a concise summary of:
+9. Finish with a concise summary of:
    - files changed,
    - behavior implemented,
    - tests you ran,
@@ -116,7 +121,10 @@ is accepted.
 def build_task_envelope(goal: str) -> str:
     """Render the fixed task envelope around the user goal (spec §14)."""
     safe_goal = goal.replace("\x00", "")
-    return TASK_TEMPLATE.format(goal=safe_goal)
+    return TASK_TEMPLATE.format(
+        goal=safe_goal,
+        kernel_health_code=RPC_KERNEL_HEALTH_CODE,
+    )
 
 
 PRIME_FIXED_INSTRUCTION = (

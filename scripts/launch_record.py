@@ -1,7 +1,12 @@
-"""Launch the RLM demo window for recording (single window, self-contained)."""
+"""Launch the RLM demo; stay windowless unless recording is explicit."""
+import argparse
 import os
 import subprocess
 from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--visible-console", action="store_true")
+args = parser.parse_args()
 
 repo = Path(__file__).resolve().parent.parent
 fixture = repo / "examples" / "payments-api"
@@ -9,6 +14,12 @@ venv_python = (
     Path(os.environ["LOCALAPPDATA"]) / "hermes" / "hermes-agent" / "venv" / "Scripts" / "python.exe"
 )
 kernel_python = Path.home() / ".prime" / "agent" / "kernel-venv" / "Scripts" / "python.exe"
+linger = (
+    "Write-Host 'Window closes in 120 seconds.' -ForegroundColor DarkGray\n"
+    "Start-Sleep -Seconds 120"
+    if args.visible_console
+    else ""
+)
 
 ps = f"""
 Set-Location -LiteralPath '{repo}'
@@ -32,7 +43,7 @@ Push-Location -LiteralPath '{fixture}'
 Pop-Location
 Write-Host '    ^ FAILS.' -ForegroundColor DarkGray
 Write-Host ''
-Write-Host '[3] prime_rlm_run -> real Prime Agent (stealth/ox-alpha) in a' -ForegroundColor Yellow
+Write-Host '[3] prime_agent(action=run) -> Prime Agent v0.8.1 in a' -ForegroundColor Yellow
 Write-Host '    detached worktree. Streaming, not reading. Please wait...' -ForegroundColor Gray
 Write-Host ''
 $env:PRIME_AGENT_KERNEL_PYTHON = '{kernel_python}'
@@ -54,15 +65,35 @@ Write-Host '  VERIFIED = the recorded host check exited zero.' -ForegroundColor 
 Write-Host '  Nothing applied, committed, or pushed.' -ForegroundColor Green
 Write-Host '================================================================' -ForegroundColor Green
 Write-Host ''
-Write-Host 'Window closes in 120 seconds.' -ForegroundColor DarkGray
-Start-Sleep -Seconds 120
+{linger}
 """
 launcher = Path(os.environ["TEMP"]) / "prime_rlm_rlm_record.ps1"
 launcher.write_text(ps, encoding="utf-8")
 
-subprocess.Popen(
-    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-NoExit", "-File", str(launcher)],
-    creationflags=subprocess.CREATE_NEW_CONSOLE,
-    cwd=str(repo),
+mode_flag = "-NoExit" if args.visible_console else "-NonInteractive"
+command = [
+    "powershell.exe",
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    mode_flag,
+    "-File",
+    str(launcher),
+]
+creationflags = (
+    subprocess.CREATE_NEW_CONSOLE if args.visible_console else subprocess.CREATE_NO_WINDOW
 )
-print("launched")
+if args.visible_console:
+    subprocess.Popen(command, creationflags=creationflags, cwd=str(repo))
+    print("launched visible recording console")
+else:
+    log_path = Path(os.environ["TEMP"]) / "prime_rlm_rlm_record.log"
+    with open(log_path, "ab") as log:
+        subprocess.Popen(
+            command,
+            creationflags=creationflags,
+            cwd=str(repo),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+    print(f"launched silently; log: {log_path}")

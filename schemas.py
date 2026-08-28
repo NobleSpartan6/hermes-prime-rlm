@@ -30,6 +30,12 @@ TOKEN_MAX_CHARS = 4_096
 MAX_EVENT_FILE_BYTES = 64 * 1024 * 1024  # 64 MiB
 MAX_EVENT_RECORD_BYTES = 4 * 1024 * 1024  # 4 MiB
 FINAL_TEXT_MAX_CHARS = 10_000
+RPC_KERNEL_HEALTH_MARKER = "__HERMES_PRIME_KERNEL_HEALTH_V1__"
+RPC_KERNEL_HEALTH_CODE = (
+    "import rlm\n"
+    "assert callable(rlm)\n"
+    f"'{RPC_KERNEL_HEALTH_MARKER}'"
+)
 
 # Candidate-tree digest bounds
 TREE_DIGEST_MAX_ENTRIES = 50_000
@@ -237,11 +243,10 @@ def validate_command_prefix(raw: object) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Prime version gate (stdlib semver parsing, pinned range >=0.8.0,<0.9.0)
+# Prime version gate (stdlib semver parsing, exact RPC compatibility pin)
 # ---------------------------------------------------------------------------
 
-PRIME_MIN_VERSION = (0, 8, 0)
-PRIME_MAX_EXCLUSIVE_VERSION = (0, 9, 0)
+PRIME_RPC_VERSION = (0, 8, 1)
 
 _SEMVER_RE = re.compile(
     r"(?<![0-9A-Za-z._-])v?(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
@@ -270,18 +275,18 @@ def extract_semver(version_output: str) -> tuple[int, int, int]:
 
 
 def is_supported_prime_version(version: tuple[int, int, int]) -> bool:
-    return PRIME_MIN_VERSION <= version < PRIME_MAX_EXCLUSIVE_VERSION
+    return version == PRIME_RPC_VERSION
 
 
 def check_prime_version_compatible(version_output: str) -> tuple[int, int, int]:
-    """Parse and range-check Prime's reported version. Raises on mismatch."""
+    """Parse and enforce the exact Prime RPC compatibility pin."""
     version = extract_semver(version_output)
     if not is_supported_prime_version(version):
         raise ValidationError(
             "UNSUPPORTED_PRIME_VERSION",
             "prime-agent version "
-            f"{version[0]}.{version[1]}.{version[2]} is outside the supported "
-            f">=0.8.0,<0.9.0 range.",
+            f"{version[0]}.{version[1]}.{version[2]} does not match the "
+            "required v0.8.1 RPC compatibility pin.",
         )
     return version
 

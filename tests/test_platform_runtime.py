@@ -28,6 +28,19 @@ def test_shell_true_absent_from_product_code():
         assert "os.system(" not in text, f"os.system call found in {path.name}"
 
 
+def test_windows_owned_processes_are_hidden_and_never_request_a_new_console(monkeypatch):
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    monkeypatch.setattr(rt.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(rt.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200, raising=False)
+    monkeypatch.setattr(rt.subprocess, "CREATE_NEW_CONSOLE", 0x00000010, raising=False)
+
+    flags = rt.windows_spawn_flags()
+
+    assert flags & rt.subprocess.CREATE_NO_WINDOW
+    assert flags & rt.subprocess.CREATE_NEW_PROCESS_GROUP
+    assert not flags & rt.subprocess.CREATE_NEW_CONSOLE
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows PATHEXT semantics")
 def test_executable_discovery_respects_pathext(tmp_path, monkeypatch):
     exe = tmp_path / "tool.fakeext"

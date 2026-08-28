@@ -1,4 +1,4 @@
-"""Hermes tool surface: exactly one model-facing tool, ``prime_rlm_run``.
+"""Hermes tool surface: exactly one model-facing tool, ``prime_agent``.
 
 The handler never lets an exception escape (always returns JSON), resolves
 operator config through the plugin context, orchestrates admission → run →
@@ -20,8 +20,7 @@ from .models import (
     PrimeObservation,
     Status,
 )
-from .prime_process import merge_observation, run_prime
-from .prime_protocol import parse_event_stream
+from .prime_rpc import run_prime_rpc
 from .receipt import build_receipt, default_platform_record, write_receipt_atomic
 from .schemas import (
     CHECKS_MAX_ENTRIES,
@@ -51,10 +50,10 @@ RUNS_SUBDIR = "runs"
 TOOL_SCHEMA = {
     "type": "function",
     "function": {
-        "name": "prime_rlm_run",
+        "name": "prime_agent",
         "description": (
-            "Run a bounded coding goal through Prime Agent (RLM) inside a "
-            "detached Git worktree created from the repository's current HEAD. "
+            "Run one bounded coding goal through a strict ephemeral Prime Agent "
+            "v0.8.1 JSONL RPC session inside a detached Git worktree. "
             "The plugin never auto-applies the candidate: it returns a run id, "
             "candidate path, host-observed check results, and a canonically "
             "encoded unsigned review receipt. This is not a sandbox or "
@@ -64,6 +63,11 @@ TOOL_SCHEMA = {
         "parameters": {
             "type": "object",
             "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["run"],
+                    "description": "Bounded one-shot RPC execution; defaults to run.",
+                },
                 "goal": {
                     "type": "string",
                     "description": "The bounded coding goal for Prime Agent.",
@@ -116,10 +120,10 @@ def register_tools(ctx) -> None:
     """Register one context-bound handler without module-global run state."""
 
     def bound_handler(args: dict, **kwargs) -> str:
-        return handle_prime_rlm_run(args, _ctx=ctx, **kwargs)
+        return handle_prime_agent(args, _ctx=ctx, **kwargs)
 
     ctx.register_tool(
-        name="prime_rlm_run",
+        name="prime_agent",
         toolset=TOOLSET_NAME,
         schema=TOOL_SCHEMA["function"],
         handler=bound_handler,
@@ -138,10 +142,43 @@ def resolve_prime_command(ctx) -> list[str]:
     getter = getattr(ctx, "get_config", None)
     if callable(getter):
         try:
-            raw = getter("prime_agent_command")
-        except Exception:
-            raw = None
+            runtime = getter("prime_runtime")
+            raw = runtime.get("command") if isinstance(runtime, dict) else None
+            if raw is None:
+                raw = getter("prime_agent_command")
+        except Exception as exc:
+            raise ValidationError(
+                "PRIME_CONFIG_READ_FAILED",
+                "could not read the configured Prime runtime.",
+            ) from exc
     return validate_command_prefix(raw)
+
+
+def resolve_prime_environment(ctx, source_env: dict[str, str] | None = None) -> dict[str, str]:
+    """Build Prime's filtered environment plus one non-secret kernel path."""
+    from .prime_rpc_process import build_rpc_environment
+
+    env = build_rpc_environment(dict(os.environ) if source_env is None else source_env)
+    getter = getattr(ctx, "get_config", None)
+    runtime = getter("prime_runtime") if callable(getter) else None
+    raw = runtime.get("kernel_python") if isinstance(runtime, dict) else None
+    if raw is None and callable(getter):
+        raw = getter("prime_agent_kernel_python")
+    if raw is None:
+        return env
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValidationError(
+            "KERNEL_PYTHON_INVALID",
+            "prime_agent_kernel_python must be a non-empty absolute path.",
+        )
+    path = Path(raw)
+    if not path.is_absolute() or not path.is_file():
+        raise ValidationError(
+            "KERNEL_PYTHON_INVALID",
+            "prime_agent_kernel_python must name an existing absolute file.",
+        )
+    env["PRIME_AGENT_KERNEL_PYTHON"] = str(path.resolve(strict=True))
+    return env
 
 
 def resolve_plugin_data_dir(ctx) -> Path:
@@ -245,11 +282,23 @@ def _compact_result(
 # ---------------------------------------------------------------------------
 
 
-def handle_prime_rlm_run(args: dict, **kwargs) -> str:
-    """Tool entry point. Always returns a JSON string; never raises."""
+def handle_prime_agent(args: dict, **kwargs) -> str:
+    """Unified v0.2 entry point. Always returns JSON and exposes only run."""
     ctx = kwargs.pop("_ctx", None)
     try:
-        return json.dumps(_run(args or {}, ctx), ensure_ascii=False)
+        if args is None:
+            normalized = {}
+        elif not isinstance(args, dict):
+            raise ValidationError(
+                "INVALID_ARGUMENTS", "prime_agent arguments must be a JSON object."
+            )
+        else:
+            normalized = dict(args)
+        action = normalized.get("action", "run")
+        if action != "run":
+            raise ValidationError("INVALID_ACTION", "v0.2 supports only action=run.")
+        normalized["action"] = "run"
+        return json.dumps(_run(normalized, ctx), ensure_ascii=False)
     except ValidationError as exc:
         return json.dumps(_validation_error_payload(exc), ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001 - tool boundary must not leak
@@ -262,6 +311,15 @@ def handle_prime_rlm_run(args: dict, **kwargs) -> str:
             },
             ensure_ascii=False,
         )
+
+
+def handle_prime_rlm_run(args: dict, **kwargs) -> str:
+    """Python compatibility alias for the v0.1 one-shot handler name."""
+    if not isinstance(args, dict):
+        return handle_prime_agent(args, **kwargs)
+    normalized = dict(args)
+    normalized["action"] = "run"
+    return handle_prime_agent(normalized, **kwargs)
 
 
 def _run(args: dict, ctx) -> dict:
@@ -277,7 +335,7 @@ def _run(args: dict, ctx) -> dict:
     if ctx is None:
         raise ValidationError(
             "PLUGIN_NOT_REGISTERED",
-            "prime_rlm_run was invoked without plugin registration context.",
+            "prime_agent was invoked without plugin registration context.",
         )
     command_prefix = resolve_prime_command(ctx)
 
@@ -367,9 +425,14 @@ def _execute_admitted_run(
 
     create_detached_worktree(repo_root, layout, base_commit)
 
-    # 4. Run Prime inside the candidate. Raw argv remains process-local; the
-    # receipt records only hashes and allowlisted file basenames.
-    observation, argv_record = run_prime(command_prefix, layout, runtime_timeout)
+    # 4. Run Prime through one strict ephemeral RPC session. Raw argv remains
+    # process-local; the receipt records only hashes and allowlisted basenames.
+    observation, argv_record = run_prime_rpc(
+        command_prefix,
+        layout,
+        runtime_timeout,
+        env=resolve_prime_environment(ctx),
+    )
 
     if observation.timed_out:
         return _finish_uncertain(
@@ -378,7 +441,7 @@ def _execute_admitted_run(
             repo_root=repo_root,
             base_commit=base_commit,
             observation=observation,
-            reason_code="PRIME_RUNTIME_TIMEOUT",
+            reason_code=observation.error_code or "RPC_TIMEOUT",
             started_monotonic=started_monotonic,
             started_wall=started_wall,
             prime_version_text=prime_version_text,
@@ -387,7 +450,23 @@ def _execute_admitted_run(
             verification_authority=_verification_authority(checks),
         )
 
-    if observation.exit_code != 0:
+    if observation.host_terminated:
+        return _finish_uncertain(
+            run_id=run_id,
+            layout=layout,
+            repo_root=repo_root,
+            base_commit=base_commit,
+            observation=observation,
+            reason_code=observation.error_code or "RPC_HOST_TERMINATED",
+            started_monotonic=started_monotonic,
+            started_wall=started_wall,
+            prime_version_text=prime_version_text,
+            argv_record=argv_record,
+            source_before=source_before,
+            verification_authority=_verification_authority(checks),
+        )
+
+    if not observation.launched or observation.exit_code not in (0, None):
         return _finish_failed(
             run_id=run_id,
             layout=layout,
@@ -405,17 +484,14 @@ def _execute_admitted_run(
             verification_authority=_verification_authority(checks),
         )
 
-    # Exit 0 → host protocol validation.
-    protocol_result = parse_event_stream(layout.prime_events, layout.candidate)
-    merge_observation(observation, protocol_result)
-    if not protocol_result.valid:
+    if not observation.stream_valid:
         return _finish_uncertain(
             run_id=run_id,
             layout=layout,
             repo_root=repo_root,
             base_commit=base_commit,
             observation=observation,
-            reason_code=protocol_result.error_code or "INVALID_STREAM",
+            reason_code=observation.error_code or "INVALID_RPC_STREAM",
             started_monotonic=started_monotonic,
             started_wall=started_wall,
             prime_version_text=prime_version_text,

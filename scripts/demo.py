@@ -1,4 +1,4 @@
-"""Live demo: run prime_rlm_run through the REAL Hermes plugin stack.
+"""Live demo: run prime_agent(action="run") through the real plugin stack.
 
 Loads the plugin exactly as Hermes does (manifest -> register_tools ->
 handler), then executes a full run against a real demo repository using the
@@ -38,6 +38,7 @@ registered: list[dict] = []
 ctx.register_tool = lambda **kw: registered.append(kw)  # capture, not global reg
 pkg.register(ctx)
 tool = registered[0]
+assert tool["name"] == "prime_agent"
 print(f"[demo] registered tool: {tool['name']} (toolset={tool['toolset']})")
 
 # ctx.state is a read-only property building PluginState(plugin_id,
@@ -70,24 +71,17 @@ git("commit", "-m", "initial commit")
 print(f"[demo] repository: {demo}")
 
 # --- Invoke the tool against REAL Prime Agent --------------------------------
-# OPENROUTER_API_KEY comes from Hermes' .env — load it manually (no dep).
-_env_path = Path(
-    os.environ.get("HERMES_HOME", Path.home() / "AppData" / "Local" / "hermes")
-) / ".env"
-for _line in _env_path.read_text(encoding="utf-8").splitlines():
-    if _line.strip() and not _line.startswith("#") and "=" in _line:
-        _k, _, _v = _line.partition("=")
-        os.environ.setdefault(_k.strip(), _v.strip())
-
+# Prime uses its own native login/credential store; Hermes keys are not copied.
 result = json.loads(
     tool["handler"](
         {
+            "action": "run",
             "goal": "Add a farewell() function to app.py that returns a goodbye string, and document both greet() and farewell() in README.md. Keep the change minimal.",
             "repository_path": str(demo),
             "checks": [
                 {
                     "name": "import-check",
-                    "argv": [sys.executable, "-c", "import app; assert callable(app.greet) and callable(app.farewell)"],
+                    "argv": [sys.executable, "-B", "-c", "import app; assert callable(app.greet) and callable(app.farewell)"],
                     "timeout_seconds": 60,
                 },
             ],
@@ -123,5 +117,13 @@ src_clean = (
     == ""
 )
 print(f"  source repo clean:   {src_clean}")
+
+if (
+    result.get("status") != "VERIFIED"
+    or result.get("verified") is not True
+    or not any(check.get("status") == "passed" for check in result.get("checks", []))
+):
+    print("\n[demo] NOT VERIFIED — see receipt for evidence.")
+    raise SystemExit(1)
 
 print("\n[demo] OK — full pipeline executed through the real plugin surface.")

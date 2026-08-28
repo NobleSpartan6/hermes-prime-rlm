@@ -76,7 +76,7 @@ def test_raw_prime_argv_is_never_persisted():
         run_id="rid",
         status=r.Status.FAILED,
         request_sha256="0" * 64,
-        prime_agent_version="0.8.2",
+        prime_agent_version="0.8.1",
         platform_record=r.default_platform_record(),
         repository_root="/repo",
         base_commit="1" * 40,
@@ -106,7 +106,7 @@ def test_limitations_always_present():
         run_id="rid",
         status=r.Status.VERIFIED if hasattr(r, "Status") else None,
         request_sha256="0" * 64,
-        prime_agent_version="0.8.2",
+        prime_agent_version="0.8.1",
         platform_record={"os_name": "x", "sys_platform": "y", "python_version": "3"},
         repository_root="/repo",
         base_commit="1" * 40,
@@ -139,6 +139,7 @@ class _FakeObservation:
     event_count = 3
     final_text = "text"
     timed_out = False
+    host_terminated = False
     stream_valid = True
     error_code = None
 
@@ -166,7 +167,7 @@ def test_uncertain_records_unknown_stability(tmp_path):
         run_id="rid",
         status=r.Status.UNCERTAIN,
         request_sha256="0" * 64,
-        prime_agent_version="0.8.2",
+        prime_agent_version="0.8.1",
         platform_record=r.default_platform_record(),
         repository_root="/repo",
         base_commit="1" * 40,
