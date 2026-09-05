@@ -208,19 +208,19 @@ def test_event_backpressure_exposes_gap_and_preserves_terminal_snapshot(factory)
 
 
 def test_projection_excludes_sensitive_text_paths_and_command_arguments(factory):
-    secret = "PRIVATE_PAYLOAD_DO_NOT_RENDER"
+    sensitive_fixture = "PRIVATE_PAYLOAD_DO_NOT_RENDER"
     raw = outcome(
-        prime_final_text=secret * 1000, message=secret,
-        candidate_path=f"/private/{secret}/candidate", receipt_path=f"/private/{secret}/receipt.json",
+        prime_final_text=sensitive_fixture * 1000, message=sensitive_fixture,
+        candidate_path=f"/private/{sensitive_fixture}/candidate", receipt_path=f"/private/{sensitive_fixture}/receipt.json",
         receipt_sha256="a" * 64,
-        checks=[{"status": "passed", "exit_code": 0, "argv": [secret], "stdout": secret}],
+        checks=[{"status": "passed", "exit_code": 0, "argv": [sensitive_fixture], "stdout": sensitive_fixture}],
     )
     controller = factory(lambda _args, _ctx: raw)
     key = str(uuid4())
     controller.submit(controller.session_id, key, arguments())
     snapshot = finish(controller, key)
-    assert secret not in json.dumps(snapshot)
-    assert secret not in json.dumps(controller.poll(controller.session_id))
+    assert sensitive_fixture not in json.dumps(snapshot)
+    assert sensitive_fixture not in json.dumps(controller.poll(controller.session_id))
     assert len(json.dumps(snapshot).encode()) < 2048
     assert snapshot["authenticity"] == "UNSIGNED"
     assert snapshot["acceptance_status"] == "PENDING"

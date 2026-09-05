@@ -8,6 +8,7 @@ See docs/desktop-rlm-v1.md for lifetime, approval, and reconnect requirements.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -181,10 +182,8 @@ def _project(raw: object) -> tuple[dict, dict]:
     code = result.get("error_code")
     if isinstance(code, str) and _CODE.fullmatch(code):
         projection["error_code"] = code
-    try:
+    with contextlib.suppress(DesktopError):
         projection["run_id"] = _uuid(result.get("run_id"))
-    except DesktopError:
-        pass
     digest = result.get("receipt_sha256")
     if isinstance(digest, str) and _DIGEST.fullmatch(digest):
         projection["receipt_sha256"] = digest
