@@ -43,6 +43,8 @@ jobs:
           python -m pip install --editable "$RUNNER_TEMP/hermes-agent"
       - run: python -m ruff check .
       - run: python -m pytest -q
+      - name: Desktop adapter overhead (synthetic, no model calls)
+        run: python scripts/benchmark_desktop.py --samples 2000
       - name: Source-tree Plugin Doctor
         run: python -m hermes_cli.main plugins doctor . --ci
       - name: Build wheel and sdist
