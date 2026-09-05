@@ -55,7 +55,7 @@ using your normal Git client. Choosing a random documents folder will not work.
 
 **What should change?** Give a specific goal, for example: “Investigate why the
 payment parser tests fail, propose a fix, and preserve the existing public API.”
-The goal limit is 8,000 characters; large evidence should stay in the repository,
+The goal limit is 20,000 characters; large evidence should stay in the repository,
 not be pasted into this field.
 
 **Verification.** Choose the test system that the project actually uses:

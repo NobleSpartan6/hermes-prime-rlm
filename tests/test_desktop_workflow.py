@@ -26,6 +26,7 @@ if PACKAGE not in sys.modules:
 workflow = importlib.import_module(f"{PACKAGE}.desktop_workflow")
 desktop = importlib.import_module(f"{PACKAGE}.desktop")
 ui = importlib.import_module(f"{PACKAGE}.desktop_ui")
+schemas = importlib.import_module(f"{PACKAGE}.schemas")
 
 
 @pytest.mark.parametrize("preset,tail", [
@@ -59,11 +60,12 @@ def test_invalid_runtime_rejected(tmp_path, minutes):
     ("relative", "Fix", "Python: pytest", ""),
     ("", "Fix", "Python: pytest", ""),
     (None, " ", "Python: pytest", ""),
-    (None, "x" * 8001, "Python: pytest", ""),
+    (None, "x" * (schemas.GOAL_MAX_CHARS + 1), "Python: pytest", ""),
     (None, "Fix\x00", "Python: pytest", ""),
     (None, "Fix", "execute anything", ""),
     (None, "Fix", "Python: pytest", "python -c anything"),
-])
+], ids=["relative-folder", "empty-folder", "empty-goal", "over-goal-bound",
+        "nul-goal", "unknown-preset", "shell-as-interpreter"])
 def test_bad_form_rejected(tmp_path, folder, goal, preset, python_path):
     with pytest.raises(workflow.FormError):
         workflow.build_request(str(tmp_path) if folder is None else folder, goal, preset, "20", python_path)
@@ -358,3 +360,12 @@ def test_native_review_dialog_defaults_to_decline(window):
     root.after(50, dismiss)
     assert launcher.confirm("Exact request\nDo not start unless approved") is False
     assert launcher.controller.list_runs(launcher.controller.session_id)["runs"] == []
+
+
+def test_form_and_guide_match_the_real_schema_goal_bound(tmp_path):
+    request = workflow.build_request(
+        str(tmp_path), "x" * schemas.GOAL_MAX_CHARS, "No verification", "20",
+    )
+    assert len(request["goal"]) == schemas.GOAL_MAX_CHARS
+    guide = (ROOT / "docs" / "getting-started.md").read_text(encoding="utf-8")
+    assert f"{schemas.GOAL_MAX_CHARS:,} characters" in guide
