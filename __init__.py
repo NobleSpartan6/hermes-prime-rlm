@@ -24,10 +24,10 @@ def register(ctx) -> None:
     Import-light by design: no subprocesses, no network, no filesystem writes,
     no Prime probing. All heavy lifting happens when the tool handler runs.
     """
-    from . import setup_gate, tools
+    from . import tools, ui_cli
 
     tools.register_tools(ctx)
-    setup_gate.register_operator_commands(ctx)
+    ui_cli.register_operator_commands(ctx)
 
 
 def create_desktop_controller(ctx, **options):
